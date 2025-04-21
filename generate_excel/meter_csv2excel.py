@@ -1,4 +1,7 @@
+#!/usr/bin/env python3
+
 import os
+import sys
 import re
 import logging
 import pandas as pd
@@ -27,6 +30,37 @@ def setup_logging(log_level=logging.INFO):
     
     return logger
 
+def load_from_stdin(time_col, value_col, measurement_col, delimiter, divisor, logger):
+    """Load and process data from stdin."""
+    logger.info("Reading data from stdin...")
+    try:
+        # Read from stdin
+        df = pd.read_csv(sys.stdin, parse_dates=[time_col], delimiter=delimiter)
+        
+        # Rename columns to standard names
+        df = df.rename(columns={
+            time_col: '_time',
+            value_col: '_value',
+            measurement_col: '_measurement'
+        })
+        
+        # Ensure we have the required columns in correct order
+        if not all(col in df.columns for col in ['_time', '_value', '_measurement']):
+            raise ValueError("Missing required columns in stdin input")
+            
+        # Reorder columns consistently
+        df = df[['_time', '_value', '_measurement']]
+            
+        if divisor != 1:
+            logger.info(f"Dividing _value column by {divisor}")
+            df['_value'] = df['_value'] / divisor
+            
+        return df
+        
+    except Exception as e:
+        logger.error(f"Error reading from stdin: {str(e)}")
+        raise
+
 def load_and_process_data(input_path, file_pattern, timezone, column_mapping, divisor, logger, delimiter=','):
     """Load and process data from file(s)."""
     target_tz = pytz.timezone(timezone)
@@ -49,6 +83,7 @@ def load_and_process_data(input_path, file_pattern, timezone, column_mapping, di
                 try:
                     df = pd.read_csv(file_path, parse_dates=[column_mapping['_time']], delimiter=delimiter)
                     df = rename_columns(df, column_mapping)
+                    df = df[['_time', '_value', '_measurement']]  # Ensure consistent column order
                     data_frames.append(df)
                 except Exception as e:
                     logger.error(f"Error processing file {file}: {str(e)}")
@@ -87,15 +122,20 @@ def rename_columns(df, column_mapping):
 
 def generate_output_files(df, output_dir, logger, measurement_name=None, unit="kWh"):
     """Generate output files with professional German Excel formatting"""
-    measurement_name = measurement_name or df["_measurement"].iloc[0] if not df.empty else "unknown"
+    # If measurement_name not provided and dataframe is empty, use "unknown"
+    if measurement_name is None:
+        if df.empty:
+            measurement_name = "unknown"
+        else:
+            measurement_name = df["_measurement"].iloc[0] if "_measurement" in df.columns else "unknown"
     
     # Create filename with timestamp range
     time_range = f"from_{df['_time'].min().strftime('%Y-%m-%d_%H-%M-%S')}_to_{df['_time'].max().strftime('%Y-%m-%d_%H-%M-%S')}"
     output_filename_csv = f"{measurement_name}_{time_range}.csv"
     output_filename_xlsx = output_filename_csv.replace(".csv", ".xlsx")
     
-    # Save CSV file
-    df.to_csv(os.path.join(output_dir, output_filename_csv), index=False)
+    # # Save CSV file
+    # df.to_csv(os.path.join(output_dir, output_filename_csv), index=False)
     
     # Create Excel workbook
     wb = Workbook()
@@ -132,12 +172,17 @@ def generate_output_files(df, output_dir, logger, measurement_name=None, unit="k
         ws = wb.create_sheet(title=year_month)
         ws.append(["Zeit der Messung", f"Zählerstand [{unit}]", "Zähleridentifikation"])
         
-        # Add data rows
+        # Get column indices once
+        time_idx = month_df.columns.get_loc('_time')
+        value_idx = month_df.columns.get_loc('_value')
+        meas_idx = month_df.columns.get_loc('_measurement')
+        
+        # Add data rows using column indices
         for row in month_df.itertuples(index=False):
             ws.append([
-                row[0].strftime("%d.%m.%Y %H:%M:%S"),
-                row[1],  # Value
-                row[2]   # Measurement ID
+                row[time_idx].strftime("%d.%m.%Y %H:%M:%S"),
+                row[value_idx],
+                row[meas_idx]
             ])
         
         # Apply German number formatting
@@ -217,7 +262,7 @@ def set_dynamic_column_widths(ws, df, is_consumption=False):
         }
         
         content_lengths = {
-            'A': max(len(row[0].strftime("%d.%m.%Y %H:%M:%S")) for row in df.itertuples(index=False)),
+            'A': max(len(row[df.columns.get_loc('_time')].strftime("%d.%m.%Y %H:%M:%S")) for row in df.itertuples(index=False)),
             'B': max(len(f"{v:,.4f}") if isinstance(v, (int, float)) else len(str(v)) 
                    for v in df["_value"]),
             'C': max(len(str(v)) for v in df["_measurement"])
@@ -236,6 +281,9 @@ Examples:
   
   # Process with custom unit (MWh)
   meter_csv2excel.py --file data.csv --unit "MWh" --divisor 1000
+
+  # Process from stdin
+  cat data.csv | meter_csv2excel.py --stdin --time-col capture_time --value-col long64_value --measurement-col logical_name --delimiter ';'
 """
     
     parser = argparse.ArgumentParser(
@@ -244,10 +292,12 @@ Examples:
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
-    # Input options
+    # Input options - make mutually exclusive with stdin
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument("--folder", help="Path to folder with CSV files")
     input_group.add_argument("--file", help="Path to single CSV file")
+    input_group.add_argument("--stdin", action="store_true", 
+                           help="Read input from stdin instead of file")
     
     # Processing parameters
     parser.add_argument("--timezone", default="Europe/Berlin",
@@ -283,21 +333,31 @@ Examples:
     logger = setup_logging(getattr(logging, args.log_level))
     
     try:
-        column_mapping = {
-            '_time': args.time_col,
-            '_value': args.value_col,
-            '_measurement': args.measurement_col
-        }
-        
-        df = load_and_process_data(
-            input_path=args.file or args.folder,
-            file_pattern=args.pattern,
-            timezone=args.timezone,
-            column_mapping=column_mapping,
-            divisor=args.divisor,
-            logger=logger,
-            delimiter=args.delimiter
-        )
+        if args.stdin:
+            df = load_from_stdin(
+                time_col=args.time_col,
+                value_col=args.value_col,
+                measurement_col=args.measurement_col,
+                delimiter=args.delimiter,
+                divisor=args.divisor,
+                logger=logger
+            )
+        else:
+            column_mapping = {
+                '_time': args.time_col,
+                '_value': args.value_col,
+                '_measurement': args.measurement_col
+            }
+            
+            df = load_and_process_data(
+                input_path=args.file or args.folder,
+                file_pattern=args.pattern,
+                timezone=args.timezone,
+                column_mapping=column_mapping,
+                divisor=args.divisor,
+                logger=logger,
+                delimiter=args.delimiter
+            )
         
         output_file = generate_output_files(
             df, 
