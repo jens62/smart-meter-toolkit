@@ -91,6 +91,8 @@ class SmartMeterExporter:
                                help='Max intervals per request (default: %(default)s)')
         other_group.add_argument('--interval', default='15m',
                                help='Interval (e.g., 15m) (default: %(default)s)')
+        other_group.add_argument('--persist-intermediate-xml', action='store_true',
+                               help='Persist intermediate XML files when processing CMS files (default: False)')
         other_group.add_argument('--log_level', default='INFO',
                                choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                                help='Log level (default: %(default)s)')
@@ -352,6 +354,22 @@ class SmartMeterExporter:
         return data_entries
 
     def get_meter_data_for_range(self, from_dt, to_dt):
+        """Fetch meter data for a specific time range from the gateway.
+        
+        Args:
+            from_dt (datetime): Start datetime of the range
+            to_dt (datetime): End datetime of the range
+            
+        Returns:
+            dict: Dictionary containing:
+                - data_entries: List of parsed data entries
+                - xml_content: Raw XML content
+                - from_str: Formatted from datetime string
+                - to_str: Formatted to datetime string
+                - result_basename: Base filename for outputs
+                - cms_file: Path to the CMS file
+                Or None if failed
+        """
         from_str = from_dt.strftime('%Y-%m-%d %H:%M:%S')
         to_str = to_dt.strftime('%Y-%m-%d %H:%M:%S')
         
@@ -362,8 +380,12 @@ class SmartMeterExporter:
         escaped_to = to_str.replace(':', '_').replace(' ', '__')
         result_basename = f"export_{escaped_from}---{escaped_to}"
         cms_file = self.data_path / f"{result_basename}.cms"
-        xml_file = self.data_path / f"{result_basename}.xml"
-        cookie_file = self.path / 'cookie-jar.txt'
+        
+        # Only create XML file if explicitly requested or needed for output
+        if self.args.persist_intermediate_xml or 'xml' in self.args.out_format or self.args.stdout_format == 'xml':
+            xml_file = self.data_path / f"{result_basename}.xml"
+        else:
+            xml_file = None
 
         # Setup session with cookie handling
         session = requests.Session()
@@ -372,6 +394,7 @@ class SmartMeterExporter:
         session.headers.update({'User-Agent': 'curl/7.88.1'})
 
         # Load cookies if they exist
+        cookie_file = self.path / 'cookie-jar.txt'
         if cookie_file.exists():
             try:
                 cookie_jar = http.cookiejar.MozillaCookieJar(str(cookie_file))
@@ -461,21 +484,32 @@ class SmartMeterExporter:
             return None
 
         # Verify and extract XML from CMS file
-        if not self.extract_xml_from_cms(cms_file, xml_file):
-            self.logger.error("Failed to extract XML from CMS file")
-            return None
-
-        # Read the extracted XML
-        try:
-            with open(xml_file, 'r', encoding='utf-8') as f:
-                xml_content = f.read()
-
-            if not xml_content.strip():
-                self.logger.error("Extracted XML file is empty")
+        if xml_file:  # Only write to file if requested
+            if not self.extract_xml_from_cms(cms_file, xml_file):
+                self.logger.error("Failed to extract XML from CMS file")
                 return None
+            
+            try:
+                with open(xml_file, 'r', encoding='utf-8') as f:
+                    xml_content = f.read()
+            except IOError as e:
+                self.logger.error(f"Failed to read XML file: {str(e)}")
+                return None
+        else:
+            # Extract directly to memory
+            result = subprocess.run(
+                ['openssl', 'cms', '-verify', '-in', str(cms_file), '-inform', 'DER',
+                '-noverify'],
+                capture_output=True,
+                text=True
+            )
+            if result.returncode != 0:
+                self.logger.error(f"OpenSSL CMS verification failed: {result.stderr}")
+                return None
+            xml_content = result.stdout
 
-        except IOError as e:
-            self.logger.error(f"Failed to read XML file: {str(e)}")
+        if not xml_content.strip():
+            self.logger.error("Extracted XML content is empty")
             return None
 
         # Parse XML
@@ -609,18 +643,35 @@ class SmartMeterExporter:
 
     def process_cms_file(self, cms_file_path):
         """Process a single CMS file and return the extracted data"""
-        xml_file_path = cms_file_path.with_suffix('.xml')
+        if self.args.persist_intermediate_xml:
+            xml_file_path = cms_file_path.with_suffix('.xml')
+        else:
+            xml_file_path = None
         
-        if not self.extract_xml_from_cms(cms_file_path, xml_file_path):
-            self.logger.error(f"Failed to extract XML from CMS file: {cms_file_path}")
-            return None
-            
         try:
-            with open(xml_file_path, 'r', encoding='utf-8') as f:
-                xml_content = f.read()
+            # Extract XML from CMS
+            if self.args.persist_intermediate_xml:
+                if not self.extract_xml_from_cms(cms_file_path, xml_file_path):
+                    self.logger.error(f"Failed to extract XML from CMS file: {cms_file_path}")
+                    return None
+                
+                with open(xml_file_path, 'r', encoding='utf-8') as f:
+                    xml_content = f.read()
+            else:
+                # Extract directly to memory without persisting
+                result = subprocess.run(
+                    ['openssl', 'cms', '-verify', '-in', str(cms_file_path), '-inform', 'DER',
+                     '-noverify'],
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode != 0:
+                    self.logger.error(f"OpenSSL CMS verification failed: {result.stderr}")
+                    return None
+                xml_content = result.stdout
 
             if not xml_content.strip():
-                self.logger.error("Extracted XML file is empty")
+                self.logger.error("Extracted XML content is empty")
                 return None
 
             data_entries = self.process_xml_content(xml_content, str(cms_file_path))
@@ -633,10 +684,10 @@ class SmartMeterExporter:
                 'input_file': cms_file_path
             }
 
-        except IOError as e:
-            self.logger.error(f"Failed to read XML file: {str(e)}")
+        except Exception as e:
+            self.logger.error(f"Failed to process CMS file: {str(e)}")
             return None
-
+        
     def process_xml_file(self, xml_file_path):
         """Process a single XML file and return the extracted data"""
         try:
