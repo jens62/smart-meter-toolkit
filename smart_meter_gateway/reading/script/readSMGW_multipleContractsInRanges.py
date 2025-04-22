@@ -297,6 +297,59 @@ class SmartMeterExporter:
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Failed to extract XML from CMS: {str(e)}")
             return False
+        
+    def get_namespaces(self, root):
+        """Extracts all namespaces dynamically from the parsed XML root."""
+        namespaces = {}
+
+        # Traverse elements in the parsed tree
+        for elem in root.iter():
+            if elem.tag.startswith("{"):
+                uri, tag = elem.tag[1:].split("}", 1)
+                if uri not in namespaces.values():
+                    prefix = f"ns{len(namespaces) + 1}"  # Generate dynamic prefixes like ns1, ns2
+                    namespaces[prefix] = uri
+
+        return namespaces
+
+    def parse_xml_entry(self, entry, namespaces, logical_name):
+        """Parse a single XML entry into a dictionary."""
+        try:
+            return {
+                'logical_name': logical_name,
+                'capture_time': entry.find("ns2:capture_time", namespaces=namespaces).text,
+                'value': entry.find("ns2:value/ns2:*", namespaces=namespaces).text,
+                'scaler': entry.find("ns2:scaler", namespaces=namespaces).text,
+                'unit': entry.find("ns2:unit", namespaces=namespaces).text,
+                'status': entry.find("ns2:status/ns2:unsigned", namespaces=namespaces).text,
+                'signature': entry.find("ns2:smgw_signature", namespaces=namespaces).text
+            }
+        except AttributeError as e:
+            self.logger.warning(f"Missing expected field in XML entry: {str(e)}")
+            return None
+
+    def process_xml_content(self, xml_content, source=None):
+        """Process XML content and return parsed data entries."""
+        try:
+            root = ET.fromstring(xml_content)
+        except ET.ParseError as e:
+            self.logger.error(f"XML parse error{'' if not source else ' in ' + source}: {str(e)}")
+            return None
+
+        namespaces = self.get_namespaces(root)
+        data_entries = []
+
+        try:
+            logical_name = root.find(".//ns2:logical_name", namespaces=namespaces).text
+            for entry in root.findall(".//ns1:entry_gateway_signed", namespaces=namespaces):
+                parsed_entry = self.parse_xml_entry(entry, namespaces, logical_name)
+                if parsed_entry:
+                    data_entries.append(parsed_entry)
+        except Exception as e:
+            self.logger.error(f"XML processing error{'' if not source else ' in ' + source}: {str(e)}")
+            return None
+
+        return data_entries
 
     def get_meter_data_for_range(self, from_dt, to_dt):
         from_str = from_dt.strftime('%Y-%m-%d %H:%M:%S')
@@ -426,43 +479,9 @@ class SmartMeterExporter:
             return None
 
         # Parse XML
-        try:
-            root = ET.fromstring(xml_content)
-        except ET.ParseError as e:
-            self.logger.error(f"Failed to parse XML: {str(e)}")
+        data_entries = self.process_xml_content(xml_content)
+        if not data_entries:
             return None
-
-        # Create a list of dictionaries for all data entries
-        data_entries = []
-
-        # Register namespaces to make parsing cleaner
-        namespaces = {
-            'ns1': 'urn:k461-dke-de:profile_generic-1',
-            'ns2': 'urn:k461-dke-de:extension-1'
-        }
-
-        logical_name = root.find(".//ns2:logical_name", namespaces=namespaces).text
-        for entry in root.findall(".//ns1:entry_gateway_signed", namespaces=namespaces):
-            try:
-                capture_time = entry.find("ns2:capture_time", namespaces=namespaces).text
-                long64_value = entry.find("ns2:value/ns2:long64", namespaces=namespaces).text
-                scaler = entry.find("ns2:scaler", namespaces=namespaces).text
-                unit = entry.find("ns2:unit", namespaces=namespaces).text
-                status = entry.find("ns2:status/ns2:unsigned", namespaces=namespaces).text
-                signature = entry.find("ns2:smgw_signature", namespaces=namespaces).text
-
-                data_entries.append({
-                    'logical_name': logical_name,
-                    'capture_time': capture_time,
-                    'long64_value': long64_value,
-                    'scaler': scaler,
-                    'unit': unit,
-                    'status': status,
-                    'signature': signature
-                })
-            except AttributeError as e:
-                self.logger.warning(f"Missing expected field in XML entry: {str(e)}")
-                continue
 
         return {
             'data_entries': data_entries,
@@ -588,40 +607,6 @@ class SmartMeterExporter:
         
         return []
 
-    def parse_xml_content(self, xml_content, source=None):
-        try:
-            root = ET.fromstring(xml_content)
-        except ET.ParseError as e:
-            self.logger.error(f"XML parse error{'' if not source else ' in ' + source}: {str(e)}")
-            return None
-
-        namespaces = {
-            'ns1': 'urn:k461-dke-de:profile_generic-1',
-            'ns2': 'urn:k461-dke-de:extension-1'
-        }
-
-        data_entries = []
-        try:
-            logical_name = root.find(".//ns2:logical_name", namespaces=namespaces).text
-            for entry in root.findall(".//ns1:entry_gateway_signed", namespaces=namespaces):
-                try:
-                    data_entries.append({
-                        'logical_name': logical_name,
-                        'capture_time': entry.find("ns2:capture_time", namespaces=namespaces).text,
-                        'long64_value': entry.find("ns2:value/ns2:long64", namespaces=namespaces).text,
-                        'scaler': entry.find("ns2:scaler", namespaces=namespaces).text,
-                        'unit': entry.find("ns2:unit", namespaces=namespaces).text,
-                        'status': entry.find("ns2:status/ns2:unsigned", namespaces=namespaces).text,
-                        'signature': entry.find("ns2:smgw_signature", namespaces=namespaces).text
-                    })
-                except AttributeError as e:
-                    self.logger.warning(f"Missing XML field{'' if not source else ' in ' + source}: {str(e)}")
-        except Exception as e:
-            self.logger.error(f"XML processing error{'' if not source else ' in ' + source}: {str(e)}")
-            return None
-
-        return data_entries
-
     def process_cms_file(self, cms_file_path):
         """Process a single CMS file and return the extracted data"""
         xml_file_path = cms_file_path.with_suffix('.xml')
@@ -638,7 +623,7 @@ class SmartMeterExporter:
                 self.logger.error("Extracted XML file is empty")
                 return None
 
-            data_entries = self.parse_xml_content(xml_content, str(cms_file_path))
+            data_entries = self.process_xml_content(xml_content, str(cms_file_path))
             if not data_entries:
                 return None
 
@@ -662,7 +647,7 @@ class SmartMeterExporter:
                 self.logger.error("XML file is empty")
                 return None
 
-            data_entries = self.parse_xml_content(xml_content, str(xml_file_path))
+            data_entries = self.process_xml_content(xml_content, str(xml_file_path))
             if not data_entries:
                 return None
 
