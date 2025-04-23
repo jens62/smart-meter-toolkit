@@ -33,6 +33,19 @@ def setup_logging(log_level=logging.INFO):
     
     return logger
 
+# Extract part between dots and format it, if length is 14 chars, according to DIN 43863-5
+# Zeichen 1: Spartenkennung
+# Zeichen 2-4: Herstellerkennzeichnung
+# Zeichen 5-6: Fabrikationsblock
+# Zeichen 7-14: Fabrikationsnummer
+def format_measurement(x):
+    parts = x.split(".")
+    if len(parts) > 1 and len(parts[1]) == 14:
+        return re.sub(r'^(.{1})(.{3})(.{2})(.{4})(.{4})$', 
+                     r'\1_\2_\3_\4_\5', 
+                     parts[1]).upper()
+    return x.rsplit(".", 1)[0]
+
 def convert_to_timezone(df, timezone, logger=None):
     """Convert dataframe timestamps to specified timezone."""
     if logger and logger.level <= logging.DEBUG:
@@ -59,13 +72,23 @@ def load_from_stdin(time_col, value_col, measurement_col, delimiter, divisor, lo
             value_col: '_value',
             measurement_col: '_measurement'
         })
-        
+
+        # df['_measurement'] = df['_measurement'].str.split(".").str[1]  # Extract part between dots
+        df['_measurement'] = df['_measurement'].apply(format_measurement)
+
+        # 1. Sort by _time in descending order (youngest first)
+        df = df.sort_values('_time', ascending=False)
+
+        # 2. Remove duplicate rows (keeping the first occurrence - which will be the youngest due to sorting)
+        df = df.drop_duplicates()      
+       
         # Ensure required columns exist
         if not all(col in df.columns for col in ['_time', '_value', '_measurement']):
             raise ValueError("Missing required columns in input data")
             
         # Reorder columns
         df = df[['_time', '_value', '_measurement']]
+   
         
         if divisor != 1:
             df['_value'] = df['_value'] / divisor
@@ -106,6 +129,15 @@ def load_and_process_data(input_path, file_pattern, timezone, column_mapping, di
     # Rename columns
     df = rename_columns(df, column_mapping)
     df = df[['_time', '_value', '_measurement']]
+
+    # df['_measurement'] = df['_measurement'].str.split(".").str[1]  # Extract part between dots
+    df['_measurement'] = df['_measurement'].apply(format_measurement)
+
+    # 1. Sort by _time in descending order (youngest first)
+    df = df.sort_values('_time', ascending=False)
+
+    # 2. Remove duplicate rows (keeping the first occurrence - which will be the youngest due to sorting)
+    df = df.drop_duplicates()        
     
     # Process data
     try:
