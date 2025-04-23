@@ -91,7 +91,9 @@ def style_excel_sheet(ws, gaps):
         cell.border = thin_border
         cell.alignment = Alignment(horizontal='center')
     
-    # Apply data styles
+    # Apply data styles and date formatting
+    # date_format = 'dddd, d. mmmm yyyy'  # "Tuesday, 5. March 2024" # just an obvoius example for testing
+    date_format = 'dd.mm.yyyy HH:MM:SS'
     for row_idx, _ in enumerate(gaps, start=2):
         fill = light_fill if row_idx % 2 == 0 else dark_fill
         for col in range(1, 3):
@@ -99,6 +101,8 @@ def style_excel_sheet(ws, gaps):
             cell.fill = fill
             cell.border = thin_border
             cell.alignment = Alignment(horizontal='center')
+            # Apply date format to both columns (assuming both contain dates)
+            cell.number_format = date_format
     
     # Adjust column widths
     for col in ws.columns:
@@ -138,7 +142,10 @@ def write_output(args, output_data, from_time, to_time):
             ws.title = "gaps"
             ws.append(['Start', 'End'])
             for gap in output_data['gaps']:
-                ws.append([gap['from'], gap['to']])
+                # Convert ISO strings to timezone-naive datetime objects
+                from_dt = pd.to_datetime(gap['from']).tz_localize(None)
+                to_dt = pd.to_datetime(gap['to']).tz_localize(None)
+                ws.append([from_dt, to_dt])
             style_excel_sheet(ws, output_data['gaps'])
             wb.save(output_filename)
         elif args.format == 'json':
@@ -224,6 +231,12 @@ def main():
     except Exception as e:
         logger.error(f"Error parsing timestamp column: {e}")
         sys.exit(1)
+
+    # 1. Sort by _time in descending order (youngest first)
+    df = df.sort_values(args.timestamp, ascending=False)
+
+    # 2. Remove duplicate rows (keeping the first occurrence - which will be the youngest due to sorting)
+    df = df.drop_duplicates() 
     
     # Detect gaps
     tz = pytz.timezone(args.timezone)
