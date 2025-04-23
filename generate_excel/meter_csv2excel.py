@@ -34,20 +34,42 @@ def setup_logging(log_level=logging.INFO):
     return logger
 
 # Extract part between dots and format it, if length is 14 chars, according to DIN 43863-5
+# see https://netze.estw.de/erlangenGips/Erlangen/__attic__20210120_155237__estw1.de/Kopfnavigation/Netze/Messwesen/Messwesen/Herstelleruebergreifende-Identifikationsnummer-fuer-Messeinrichtungen.pdf
 # Zeichen 1: Spartenkennung
 # Zeichen 2-4: Herstellerkennzeichnung
 # Zeichen 5-6: Fabrikationsblock
 # Zeichen 7-14: Fabrikationsnummer
+#
+# Kennung;Sparte;Erläuterung
+# 0;–;Die 0 ist wegen unterschiedlicher Darstellung und Verwendung in den Geräteverwaltungssystemen nicht zu verwenden.
+# 1;Elektrizität;     
+# 2;–;  
+# 3;–;   
+# 4;Heizkosten;  
+# 5;Kälte;   
+# 6;Wärme;   
+# 7;Gas; 
+# 8;Wasser, kalt;Temperatur Medium < 30 °C  
+# 9;Wasser, heiß;Temperatur Medium 30 °C … 90 °C und 90 °C  
+# A;–    ;
+# B;–    ;
+# C;–    ;
+# D;–    ;
+# E;    Kommunikation;Kommunikationsgeräte wie z. B. Datensammler stellen eine eigene Sparte dar und sind daher mit einer eigenen Kennung zu versehen.  
+# F;    Bisher nicht spezifizierte Sparten;Um eine Konvertierung der Sparten nach OBIS zu anderen Kodierungen zu ermöglichen, wird der Buchstabe F als „Jokerzeichen“ für hier nicht weiter aufgeführte Sparten verwendet.
 def format_measurement(x):
     parts = x.split(".")
     if len(parts) > 1 and len(parts[1]) == 14:
         return re.sub(r'^(.{1})(.{3})(.{2})(.{4})(.{4})$', 
-                     r'\1_\2_\3_\4_\5', 
+                     r'\1 \2\3 \4 \5', 
                      parts[1]).upper()
     return x.rsplit(".", 1)[0]
 
 def convert_to_timezone(df, timezone, logger=None):
     """Convert dataframe timestamps to specified timezone."""
+    if not isinstance(timezone, str):
+        raise ValueError(f"Timezone must be string (e.g. 'Europe/Berlin'), got {type(timezone)}")
+    
     if logger and logger.level <= logging.DEBUG:
         logger.debug(f"Converting timestamps to timezone: {timezone}")
     
@@ -60,28 +82,56 @@ def convert_to_timezone(df, timezone, logger=None):
     df["_time"] = df["_time"].dt.tz_convert(tz)
     return df
 
-def process_dataframe(df, divisor=1, logger=None):
+def process_dataframe(df, keep_every, timezone, divisor, logger=None):
     """Apply common processing steps to a dataframe."""
-    # 1. Format measurement column
-    df['_measurement'] = df['_measurement'].apply(format_measurement)
+    try:
+        # 0. Normalize timestamps by removing fractions of seconds while preserving timezone
+        if pd.api.types.is_datetime64_any_dtype(df['_time']):
+            # For already parsed timestamps
+            if df['_time'].dt.tz is None:
+                # If no timezone, assume UTC
+                df['_time'] = pd.to_datetime(df['_time']).dt.tz_localize('UTC').dt.floor('s')
+            else:
+                # If timezone exists, keep it
+                df['_time'] = df['_time'].dt.floor('s')
+        else:
+            # For string timestamps, parse while preserving timezone info
+            df['_time'] = pd.to_datetime(
+                df['_time'].str.replace(r'(\.\d+)(?=[Z+-])', '', regex=True),  # Remove fractions before timezone
+                utc=True  # Parse timezone-aware
+            ).dt.floor('s')
 
-    # 2. Sort by _time in descending order (youngest first)
-    df = df.sort_values('_time', ascending=False)
+        # 0.5 Apply downsampling if requested
+        if keep_every != 1:
+            if logger:
+                logger.info(f"Downsampling data (keeping every {keep_every if keep_every > 0 else 'first/last per month'})")
+            df = downsample_data(df, keep_every, timezone, logger)
 
-    # 3. Remove duplicate rows (keeping the first occurrence - which will be the youngest due to sorting)
-    df = df.drop_duplicates()
+        # 1. Format measurement column
+        df['_measurement'] = df['_measurement'].apply(format_measurement)
 
-    # 4. Apply divisor if needed
-    if divisor != 1:
-        df['_value'] = df['_value'] / divisor
+        # 2. Sort by _time in descending order (youngest first)
+        df = df.sort_values('_time', ascending=False)
 
-    # Ensure required columns exist and in correct order
-    if not all(col in df.columns for col in ['_time', '_value', '_measurement']):
-        raise ValueError("Missing required columns in input data")
+        # 3. Remove duplicate rows (keeping the first occurrence - which will be the youngest due to sorting)
+        df = df.drop_duplicates()
+
+        # 4. Apply divisor if needed
+        if divisor != 1:
+            df['_value'] = df['_value'] / divisor
+
+        # Ensure required columns exist and in correct order
+        if not all(col in df.columns for col in ['_time', '_value', '_measurement']):
+            raise ValueError("Missing required columns in input data")
     
-    return df[['_time', '_value', '_measurement']]
+        return df[['_time', '_value', '_measurement']]
+    
+    except Exception as e:
+        if logger:
+            logger.error(f"Error processing dataframe: {str(e)}")
+        raise    
 
-def load_from_stdin(time_col, value_col, measurement_col, delimiter, divisor, logger=None):
+def load_from_stdin(time_col, value_col, measurement_col, delimiter, keep_every, timezone, divisor, logger=None):
     """Load and process data from stdin."""
     if logger:
         logger.info("Reading data from stdin...")
@@ -94,13 +144,54 @@ def load_from_stdin(time_col, value_col, measurement_col, delimiter, divisor, lo
             measurement_col: '_measurement'
         })
         
-        return process_dataframe(df, divisor, logger)
+        return process_dataframe(df, keep_every, timezone, divisor, logger)
+    
     except Exception as e:
         if logger:
             logger.error(f"Error reading from stdin: {str(e)}")
         raise
 
-def load_and_process_data(input_path, file_pattern, timezone, column_mapping, divisor, logger=None, delimiter=','):
+def downsample_data(df, keep_every_n, timezone, logger=None):
+    """
+    Downsample data while preserving:
+    - Original timestamps
+    - Always keeps newest/oldest per timezone-based year-month
+    - Maintains measurement boundaries
+    """
+    if keep_every_n <= 1:
+        return df
+
+    try:
+        # Create timezone-aware copy just for grouping
+        df_group = df.copy()
+        df_group = convert_to_timezone(df_group, timezone, logger)
+        df_group['_year_month'] = df_group['_time'].dt.strftime('%Y-%m')
+        
+        # Track indices to keep from original df
+        keep_indices = set()
+        
+        for (year_month, measurement), group_indices in df_group.groupby(
+            ['_year_month', '_measurement']).groups.items():
+            
+            group_size = len(group_indices)
+            
+            # Always keep newest and oldest
+            keep_indices.add(group_indices[0])  # Newest (after sort)
+            keep_indices.add(group_indices[-1]) # Oldest
+            
+            # Add sampled points between them
+            if group_size > 2 and keep_every_n > 1:
+                keep_indices.update(group_indices[1:-1:keep_every_n])
+        
+        # Return filtered original dataframe (with original timestamps)
+        return df.iloc[sorted(keep_indices)].copy()
+    
+    except Exception as e:
+        if logger:
+            logger.error(f"Downsampling failed: {str(e)}")
+        raise
+
+def load_and_process_data(input_path, file_pattern, timezone, column_mapping, keep_every, divisor, logger=None, delimiter=','):
     """Load and process data from file(s)."""
     if logger:
         logger.info(f"Processing data with timezone: {timezone}")
@@ -131,7 +222,7 @@ def load_and_process_data(input_path, file_pattern, timezone, column_mapping, di
     df = df.rename(columns={v: k for k, v in column_mapping.items()})
     
     try:
-        df = process_dataframe(df, divisor, logger)
+        df = process_dataframe(df, keep_every, timezone, divisor, logger)
         df = convert_to_timezone(df, timezone, logger)
         df['_time'] = df['_time'].dt.tz_localize(None)  # Remove tz for processing
         return df
@@ -146,7 +237,7 @@ def apply_german_number_format(ws, value_col_idx):
     for row in ws.iter_rows(min_row=2, min_col=value_col_idx, max_col=value_col_idx):
         for cell in row:
             if isinstance(cell.value, (int, float)):
-                cell.value = round(cell.value, 4)  # Ensure 4 decimal places
+                # cell.value = round(cell.value, 4)  # Ensure 4 decimal places
                 cell.number_format = german_number_format
 
 def apply_zebra_formatting(ws, header_style):
@@ -277,13 +368,18 @@ def generate_excel_output(df, output_dir, measurement_name, unit, timezone, logg
             # Set dynamic column widths
             set_dynamic_column_widths(ws, month_df)
             
-            # Add consumption formula
+            # Add consumption formula (now with explicit number formatting)
             formula = f"=MAX('{year_month}'!B:B)-MIN('{year_month}'!B:B)"
             ws_consumption.append([year_month, formula])
+            
+            # Get the newly added formula cell and apply format
+            last_row = ws_consumption.max_row
+            formula_cell = ws_consumption.cell(row=last_row, column=2)
+            formula_cell.number_format = '#,##0.0000;[Red]-#,##0.0000'  # German format
         
         # ===== FINALIZE VERBRAUCH SHEET =====
         # Apply formatting to consumption sheet
-        apply_german_number_format(ws_consumption, value_col_idx=2)
+        # apply_german_number_format(ws_consumption, value_col_idx=2)
         apply_zebra_formatting(ws_consumption, header_style)
         set_dynamic_column_widths(ws_consumption, df_excel, is_consumption=True)
         
@@ -454,7 +550,7 @@ def generate_output_files(df, output_dir, logger, measurement_name=None, unit="k
         return []
     
     if measurement_name is None:
-        measurement_name = df["_measurement"].iloc[0] if "_measurement" in df.columns else "unknown"
+        measurement_name = df["_measurement"].str.replace(" ", "_").iloc[0] if "_measurement" in df.columns and not df["_measurement"].empty else "unknown"
     
     output_files = []
     
@@ -526,26 +622,27 @@ def generate_xml_output_to_file(df, output_dir, measurement_name, unit, timezone
     return output_filename
 
 def main():
-    examples = """
+    examples = f"""\
 Examples:
-  # Output XML to stdout only
-  cat data.csv | meter_csv2excel.py --stdin --out-format none --stdout-format xml
   
-  # Output to both files (Excel and XML) and JSON to stdout
-  meter_csv2excel.py --file data.csv --out-format excel xml --stdout-format json
+  # Default behavior (keep all rows)
+  %(prog)s --file data.csv
   
-  # Output CSV to stdout
-  meter_csv2excel.py --file data.csv --stdout-format csv
+  # Basic downsampling scenarios:
+  %(prog)s --file data.csv --keep-every 10    # Keep every 10th row
+  %(prog)s --file data.csv --keep-every 0     # Only first/last per month
   
-  # Output CSV to file
-  meter_csv2excel.py --file data.csv --out-format csv
+  # Mixed output format examples:
+  %(prog)s --file data.csv --keep-every 10 --out-format excel csv
+  %(prog)s --file data.csv --keep-every 5 --stdout-format json
   
-  # Default behavior (Excel file only)
-  meter_csv2excel.py --file data.csv
+  # Pipeline usage:
+  cat data.csv | %(prog)s --stdin --keep-every 20 > output.json
+  find ./data -name "*.csv" | xargs %(prog)s --keep-every 30 --out-format excel
 """
-    
+
     parser = argparse.ArgumentParser(
-        description="Process meter data and generate reports",
+        description="Process meter data with configurable downsampling",
         epilog=examples,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -583,8 +680,26 @@ Examples:
     parser.add_argument("--log-level", default="INFO",
                        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
                        help="Logging level")
-    
+
+    # Downsampling parameter
+    parser.add_argument(
+        "--keep-every",
+        type=int,
+        default=1,
+        metavar="N",
+        help="""Downsample output by keeping:
+1 = all rows (default),
+0 = only first/last per month,
+N = every Nth row between endpoints
+Applies to all output formats""",
+    )
+
     args = parser.parse_args()
+
+    # Validate downsampling parameter
+    if args.keep_every < 0:
+        parser.error("--keep-every must be >= 0")
+    
     logger = setup_logging(getattr(logging, args.log_level))
     
     try:
@@ -592,7 +707,7 @@ Examples:
         if args.stdin:
             df = load_from_stdin(
                 args.time_col, args.value_col, args.measurement_col,
-                args.delimiter, args.divisor, logger
+                args.delimiter, args.keep_every, args.timezone, args.divisor, logger
             )
         else:
             column_mapping = {
@@ -602,7 +717,7 @@ Examples:
             }
             df = load_and_process_data(
                 args.file or args.folder, args.pattern, args.timezone,
-                column_mapping, args.divisor, logger, args.delimiter
+                column_mapping, args.keep_every, args.divisor, logger, args.delimiter
             )
         
         # Handle stdout output
