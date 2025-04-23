@@ -60,6 +60,27 @@ def convert_to_timezone(df, timezone, logger=None):
     df["_time"] = df["_time"].dt.tz_convert(tz)
     return df
 
+def process_dataframe(df, divisor=1, logger=None):
+    """Apply common processing steps to a dataframe."""
+    # 1. Format measurement column
+    df['_measurement'] = df['_measurement'].apply(format_measurement)
+
+    # 2. Sort by _time in descending order (youngest first)
+    df = df.sort_values('_time', ascending=False)
+
+    # 3. Remove duplicate rows (keeping the first occurrence - which will be the youngest due to sorting)
+    df = df.drop_duplicates()
+
+    # 4. Apply divisor if needed
+    if divisor != 1:
+        df['_value'] = df['_value'] / divisor
+
+    # Ensure required columns exist and in correct order
+    if not all(col in df.columns for col in ['_time', '_value', '_measurement']):
+        raise ValueError("Missing required columns in input data")
+    
+    return df[['_time', '_value', '_measurement']]
+
 def load_from_stdin(time_col, value_col, measurement_col, delimiter, divisor, logger=None):
     """Load and process data from stdin."""
     if logger:
@@ -72,28 +93,8 @@ def load_from_stdin(time_col, value_col, measurement_col, delimiter, divisor, lo
             value_col: '_value',
             measurement_col: '_measurement'
         })
-
-        # df['_measurement'] = df['_measurement'].str.split(".").str[1]  # Extract part between dots
-        df['_measurement'] = df['_measurement'].apply(format_measurement)
-
-        # 1. Sort by _time in descending order (youngest first)
-        df = df.sort_values('_time', ascending=False)
-
-        # 2. Remove duplicate rows (keeping the first occurrence - which will be the youngest due to sorting)
-        df = df.drop_duplicates()      
-       
-        # Ensure required columns exist
-        if not all(col in df.columns for col in ['_time', '_value', '_measurement']):
-            raise ValueError("Missing required columns in input data")
-            
-        # Reorder columns
-        df = df[['_time', '_value', '_measurement']]
-   
         
-        if divisor != 1:
-            df['_value'] = df['_value'] / divisor
-            
-        return df
+        return process_dataframe(df, divisor, logger)
     except Exception as e:
         if logger:
             logger.error(f"Error reading from stdin: {str(e)}")
@@ -127,35 +128,17 @@ def load_and_process_data(input_path, file_pattern, timezone, column_mapping, di
         df = pd.concat(data_frames, ignore_index=True)
     
     # Rename columns
-    df = rename_columns(df, column_mapping)
-    df = df[['_time', '_value', '_measurement']]
-
-    # df['_measurement'] = df['_measurement'].str.split(".").str[1]  # Extract part between dots
-    df['_measurement'] = df['_measurement'].apply(format_measurement)
-
-    # 1. Sort by _time in descending order (youngest first)
-    df = df.sort_values('_time', ascending=False)
-
-    # 2. Remove duplicate rows (keeping the first occurrence - which will be the youngest due to sorting)
-    df = df.drop_duplicates()        
+    df = df.rename(columns={v: k for k, v in column_mapping.items()})
     
-    # Process data
     try:
+        df = process_dataframe(df, divisor, logger)
         df = convert_to_timezone(df, timezone, logger)
         df['_time'] = df['_time'].dt.tz_localize(None)  # Remove tz for processing
-        
-        if divisor != 1:
-            df['_value'] = df['_value'] / divisor
-            
-        return df.drop_duplicates()
+        return df
     except Exception as e:
         if logger:
             logger.error(f"Error processing data: {str(e)}")
         raise
-
-def rename_columns(df, column_mapping):
-    """Rename columns according to mapping."""
-    return df.rename(columns={v: k for k, v in column_mapping.items()})
 
 def apply_german_number_format(ws, value_col_idx):
     """Apply German number formatting to value column"""
