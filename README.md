@@ -1,4 +1,4 @@
-# meter handling - overview
+# meter handling
 
 This repository is about 
 - reading meters, 
@@ -11,8 +11,9 @@ All of this may be of particular interest to those who do not use home automatio
 
 The Python scripts in the scripts folder may help. The scripts can be copied, and apart from a few Python modules, no installation is required.
 
+## Quickstart
 
-## reading from Smart Meter
+### reading from Smart Meter
 **Usage for the impatient**
 
 To test the process in principle, create an Excel spreadsheet of the monthly consumption based on the meter readings of the last two hours provided by a smart meter gateway:
@@ -64,7 +65,25 @@ python read_SMGW.py \
     --delimiter ";"
 ```
 
-### Usage
+#### Usage
 Use the usual `--help` or `--h` to be overwhelmed by the possibilities.
+
+## Getting Started: The Full Guide
+
+If you have meters for electricity, water, gas, etc., you may want to read them.
+Consumption, trends and comparisons are certainly desirable.
+If you know the data situation, you can take measures to save resources and measure the effects.
+
+The first step is to gain technical access to the meter data.
+The next step is to store the meter readings with a time stamp. The last step is to analyse the data.
+
+As an option for accessing data from a digital electricity meter, I will describe a **PPC Smart Meter Gateway**.
+
+For data storage I use **InfluxDB v2**, **InfluxDB v3** and **MySQL** (in the **MariaDB** variant).
+
+There are some useful Python scripts for processing the data, such as calculating monthly consumption based on meter readings.
+
+There is separate documentation for each of the different topics:
+- Using the PPC Smart Meter Gateway
 
 
