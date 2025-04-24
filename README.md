@@ -84,6 +84,8 @@ For data storage I use **InfluxDB v2**, **InfluxDB v3** and **MySQL** (in the **
 There are some useful Python scripts for processing the data, such as calculating monthly consumption based on meter readings.
 
 There is separate documentation for each of the different topics:
-- Using the PPC Smart Meter Gateway
+- [Using the PPC Smart Meter Gateway](docs/Using_the_PPC_Smart_Meter_Gateway.md)
+
+
 
 
