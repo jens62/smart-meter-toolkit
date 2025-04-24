@@ -43,9 +43,18 @@ class SmartMeterExporter:
         self.logger.addHandler(handler)
 
     def parse_params(self):
+        examples = f'''\
+Examples:
+ %(prog)s --user myUser --password myPassword --meter "1 ABCxx xxxx xxxx" --past 60d
+ %(prog)s --user myUser --password myPassword --meter "1 ABCxx xxxx xxxx" --from 0 --to now
+ %(prog)s --user myUser --password myPassword --meter "1 ABCxx xxxx xxxx" --from 2024-01-01 --to 2024-01-31 --out json
+ %(prog)s --input-format cms --input-file /path/to/file.cms
+'''
+            
         parser = argparse.ArgumentParser(
             description='Exports data from a Smartmeter Gateway using the han interface with automatic time range splitting.',
             formatter_class=argparse.RawDescriptionHelpFormatter,
+            epilog=examples,
             add_help=False
         )
 
@@ -112,7 +121,7 @@ class SmartMeterExporter:
     def validate_params(self):
         if self.args.input_format == 'none':
             # Validate required connection parameters
-            if not all([self.args.user, self.args.password, self.args.meter]):
+            if not all([self.args.user, self.args.password]):
                 self.logger.error("--user, --password, and --meter are required when --input-format is none")
                 sys.exit(1)
 
@@ -271,17 +280,66 @@ class SmartMeterExporter:
             raise ValueError("Could not find TKN in form")
         tkn = tkn_input['value']
 
+        # In case the smart meter recorded data for diiferent meters, it is necessary to select a ceratin meter
+        # the mid will change depending on the selected meter 
         meter_select = meter_form.find('select', {'name': 'mid'})
-        if not meter_select:
-            raise ValueError("Could not find meter select in form")
+        if meter_select:
+            options = meter_select.find_all('option')
+            # Extract values and text
+            # option_data = [(option["value"], option.text) for option in options]
+            option_text = [option.text.split(".")[1] for option in options]
+            #self.logger.debug("meter option:" + str(option_text) + " checking against: " + str(self.args.meter.replace(" ", "").lower()))
 
-        meter_option = meter_select.find('option', string=lambda t: self.args.meter in str(t))
-        if not meter_option or 'value' not in meter_option.attrs:
-            raise ValueError(f"Could not find meter {self.args.meter} in select options")
-        mid = meter_option['value']
+            if not self.args.meter:
+                msg = "--meter is required, because the smart meter recorded for multiple meters. Please select one of the following as argument for --meter: \n\t"
+                msg += ", ".join(option_text)
+                # self.logger.error(msg)
+                # sys.exit(1)
+                raise ValueError(msg)
+            # else:
+            #     self.logger.debug("meter option:" + str(option_text) + " checking against: " + str(self.args.meter.replace(" ", "").lower()))
+
+            meter_option = meter_select.find('option', string=lambda t: self.args.meter.replace(" ", "").lower() in str(t))
+            if not meter_option or 'value' not in meter_option.attrs:
+                self.logger.error("meter option:" + str(option_text) + " checking against: " + str(self.args.meter.replace(" ", "").lower()))
+                raise ValueError(f"Could not find meter {self.args.meter} in select options")
+            mid = meter_option['value']
 
         return mid, tkn
 
+
+
+    # Your file appears to be a **CMS (Cryptographic Message Syntax) file** that contains **signed XML data**. The binary prologue and postlogue suggest that the XML content is encapsulated within a cryptographic envelope, likely for authentication or integrity verification purposes. This format is commonly used in **smart meter gateways** to ensure secure data transmission.
+    #
+    # To extract the XML data from the file, you can use **OpenSSL** or **xmlstarlet**, depending on whether you need to **decode** the cryptographic envelope first:
+    # 1. **OpenSSL**: If the file is signed or encrypted, you may need to use OpenSSL to extract the XML content:
+    #    ```bash
+    #    openssl cms -verify -in yourfile.cms -noverify -out extracted.xml
+    #    ```
+    #    This command attempts to verify and extract the XML content.
+    #
+    # 2. **xmlstarlet**: If the XML is already accessible within the file, you can use `xmlstarlet` to parse and manipulate it:
+    #    ```bash
+    #    xmlstarlet sel -t -m "//ns1:object" -v "." extracted.xml
+    #    ```
+    #    This extracts the relevant XML data.
+    #
+    # Would you like help verifying whether the file is encrypted or signed?
+    #
+    # *With openssl I get: Error reading SMIME Content Info
+    # 40CC3F0302000000:error:068000D1:asn1 encoding routines:SMIME_read_ASN1_ex:no content type:crypto/asn1/asn_mime.c*
+    #
+    # It looks like OpenSSL is struggling to recognize the content type of your file, which suggests that it might not be a standard S/MIME or CMS format. This error often occurs when the file is missing expected headers or is encoded in an unexpected way.
+    #
+    # Here are a few things you can try:
+    # 1. **Check the file format**: If the file is in DER format instead of PEM, try specifying `-inform DER`:
+    #    ```bash
+    #    openssl cms -verify -in yourfile.cms -inform DER -noverify -out extracted.xml
+    #    ```
+    # 2. **Use a hex editor**: Open the file in a hex editor (`xxd` or `hexdump`) to inspect its structure and confirm whether it contains recognizable CMS or PKCS#7 headers.
+    # 3. **Try a different tool**: If OpenSSL isn't working, you might need a specialized tool like `dumpasn1` to analyze the ASN.1 structure.
+    #
+    # You can also check out [this discussion](https://stackoverflow.com/questions/28518775/trying-to-decrypt-s-mime-file-using-openssl) for similar issues and potential solutions.
     def extract_xml_from_cms(self, cms_file, xml_file):
         try:
             result = subprocess.run(
