@@ -1,6 +1,9 @@
 # Mac stuff
 **/.DS_Store
 
+# my chats with AI
+**_chat.md
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
