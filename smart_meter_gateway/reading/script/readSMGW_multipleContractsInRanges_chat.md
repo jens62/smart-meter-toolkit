@@ -377,8 +377,64 @@ Defaults:
     def extract_xml_from_cms(self, cms_file, xml_file):
         try:
             result = subprocess.run(
-                ['openssl', 'cms', '-verify', '-in', str(cms_file), '-inform', 'DER',
-                 '-noverify', '-out', str(xml_file)],
+                ['
+                
+                The error occurs because the walrus operator (`:=`) in the lambda function doesn't work as expected in this context. Here's the corrected version that properly handles the string formatting conditionally:
+
+```python
+df['_measurement'] = df['_measurement'].apply(
+    lambda x: (
+        # First try to split and check length
+        parts = x.split(".")
+        if len(parts) > 1 and len(parts[1]) == 14:
+            # Apply the formatting if conditions met
+            re.sub(r'^(.{1})(.{3})(.{2})(.{4})(.{4})$', 
+                  r'\1_\2_\3_\4_\5', 
+                  parts[1]).upper()
+        else:
+            # Otherwise return everything before last dot
+            x.rsplit(".", 1)[0]
+    )
+)
+```
+
+However, since we can't use assignment statements directly in lambdas, here's the working version:
+
+```python
+import re
+
+def format_measurement(x):
+    parts = x.split(".")
+    if len(parts) > 1 and len(parts[1]) == 14:
+        return re.sub(r'^(.{1})(.{3})(.{2})(.{4})(.{4})$', 
+                     r'\1_\2_\3_\4_\5', 
+                     parts[1]).upper()
+    return x.rsplit(".", 1)[0]
+
+df['_measurement'] = df['_measurement'].apply(format_measurement)
+```
+
+### As a proper one-liner (without walrus operator):
+```python
+df['_measurement'] = df['_measurement'].apply(
+    lambda x: re.sub(r'^(.{1})(.{3})(.{2})(.{4})(.{4})$', 
+                    r'\1_\2_\3_\4_\5', 
+                    x.split(".")[1]).upper() 
+    if (len(x.split(".")) > 1 and len(x.split(".")[1]) == 14) 
+    else x.rsplit(".", 1)[0]
+)
+```
+
+### Key fixes:
+1. Removed walrus operator which doesn't work in this context
+2. Added proper length checks (`len(parts) > 1`)
+3. Used `re.sub()` instead of `str.replace()` for regex replacement
+4. Added fallback to return original value if conditions aren't met
+
+This will:
+- Only apply formatting to 14-character strings after the first dot
+- Return everything before the last dot for other cases
+- Handle edge cases where splitting might not work as expected, '-out', str(xml_file)],
                 capture_output=True,
                 text=True
             )
@@ -6926,3 +6982,889 @@ If you're still having issues, you might want to:
 1. Check your editor's indentation settings (should be 4 spaces per level)
 2. Verify there are no mixed tabs and spaces
 3. Make sure all parentheses and quotes are properly closed
+
+text = " Hello World! This is Python. "
+cleaned_text = text.replace(" ", "").lower()
+
+print(cleaned_text)
+
+from bs4 import BeautifulSoup
+
+html = """<select id="dropdown">
+    <option value="apple">Apple</option>
+    <option value="banana">Banana</option>
+    <option value="cherry">Cherry</option>
+</select>"""
+
+soup = BeautifulSoup(html, "html.parser")
+
+# Find all <option> elements inside <select>
+options = soup.find("select").find_all("option")
+
+# Extract the values
+option_values = [option["value"] for option in options]
+
+print(option_values)  # Output: ['apple', 'banana', 'cherry']
+
+```python
+        options = meter_select.find_all('option')
+        # Extract the values
+        option_values = [option["value"] for option in options]
+        logger.debug("meter option:" + option_values)
+```
+results in:
+```bash
+        can only concatenate str (not "list") to str
+```
+
+
+from bs4 import BeautifulSoup
+
+html = """<select id="dropdown">
+    <option value="apple">Apple</option>
+    <option value="banana">Banana</option>
+    <option value="cherry">Cherry</option>
+</select>"""
+
+soup = BeautifulSoup(html, "html.parser")
+
+# Find all <option> elements
+options = soup.find("select").find_all("option")
+
+# Extract values and text
+option_data = [(option["value"], option.text) for option in options]
+
+# Print results
+for value, text in option_data:
+    print(f"Value: {value}, Text: {text}")
+
+
+    from bs4 import BeautifulSoup
+
+html = """<select id="dropdown">
+    <option value="apple">Apple</option>
+    <option value="banana">Banana</option>
+    <option value="cherry">Cherry</option>
+</select>"""
+
+soup = BeautifulSoup(html, "html.parser")
+
+# Find all <option> elements
+options = soup.find("select").find_all("option")
+
+# Extract values and text
+option_data = [(option["value"], option.text) for option in options]
+
+# Print in a single line using str()
+print("Options:", str(option_data))
+
+text = "hello.world.example"
+middle_part = text.split(".")[1]  # Extract part between dots
+
+print(middle_part)
+
+
+When the --out-format is xml, the result is the concatened xml for each chunk.
+
+E.g.:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<ns1:object class_id="7" class_version="1" id="01005e31803c.1emh0011802881.sm" xmlns:ns1="urn:k461-dke-de:profile_generic-1" xmlns:ns2="urn:k461-dke-de:extension-1">
+  <ns1:attributes count="3">
+   <ns2:logical_name id="1">01005e31803c.1emh0011802881.sm</ns2:logical_name>
+   <ns1:capture_objects id="2" co...
+
+    </ns1:buffer>
+  </ns1:attributes>
+</ns1:object>
+<?xml version="1.0" encoding="UTF-8"?>
+<ns1:object class_id="7" class_version="1" id="01005e31803c.1emh0011802881.sm" xmlns:ns1="urn:k461-dke-de:profile_generic-1" xmlns:ns2="urn:k461-dke-de:extension-1">
+  <ns1:attributes count="3">
+   <ns2:logical_name id="1">01005e31803c.1emh0011802881.sm</ns2:logical_name>
+   <ns1:capture_objects id="2" count="1">
+   <ns1:capture_object id="1">....
+    </ns1:buffer>
+  </ns1:attributes>
+</ns1:object>
+```
+
+That is not a valid xml.
+
+Can you write a short python script to correct these concatenated xmls in one file to another file with valid xml?
+
+
+Here's a Python script that will merge multiple XML documents (like the concatenated ones from your smart meter) into a single valid XML document:
+
+```python
+#!/usr/bin/env python3
+import sys
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+def merge_xml_files(input_file, output_file):
+    """Merge multiple XML documents into one valid XML document"""
+    try:
+        # Read the entire input file
+        with open(input_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Split into individual XML documents
+        xml_docs = content.split('<?xml version="1.0" encoding="UTF-8"?>')
+        xml_docs = [doc.strip() for doc in xml_docs if doc.strip()]
+        
+        if not xml_docs:
+            print("No XML documents found in input file", file=sys.stderr)
+            return False
+        
+        # Create a root element for our merged document
+        merged_root = ET.Element("merged_data")
+        
+        # Parse each XML document and add its content to our merged document
+        for doc in xml_docs:
+            try:
+                # Add the XML declaration back since we split on it
+                xml_content = '<?xml version="1.0" encoding="UTF-8"?>' + doc
+                root = ET.fromstring(xml_content)
+                merged_root.append(root)
+            except ET.ParseError as e:
+                print(f"Error parsing XML document: {e}", file=sys.stderr)
+                continue
+        
+        # Write the merged XML to output file
+        tree = ET.ElementTree(merged_root)
+        tree.write(output_file, encoding='utf-8', xml_declaration=True)
+        print(f"Successfully merged XML documents to {output_file}")
+        return True
+    
+    except Exception as e:
+        print(f"Error merging XML files: {e}", file=sys.stderr)
+        return False
+
+if __name__ == '__main__':
+    if len(sys.argv) != 3:
+        print("Usage: python merge_xml.py <input_file.xml> <output_file.xml>", file=sys.stderr)
+        sys.exit(1)
+    
+    input_file = Path(sys.argv[1])
+    output_file = Path(sys.argv[2])
+    
+    if not input_file.exists():
+        print(f"Input file {input_file} does not exist", file=sys.stderr)
+        sys.exit(1)
+    
+    success = merge_xml_files(input_file, output_file)
+    sys.exit(0 if success else 1)
+```
+
+### How to use this script:
+1. Save it as `merge_xml.py`
+2. Run it with: `python merge_xml.py input.xml output.xml`
+
+### What it does:
+1. Reads the concatenated XML file
+2. Splits it into individual XML documents
+3. Creates a new root element (`<merged_data>`)
+4. Parses each XML document and adds it as a child of the root element
+5. Writes a single, well-formed XML document
+
+### Example output structure:
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<merged_data>
+  <ns1:object class_id="7" class_version="1" id="01005e31803c.1emh0011802881.sm" xmlns:ns1="urn:k461-dke-de:profile_generic-1" xmlns:ns2="urn:k461-dke-de:extension-1">
+    <!-- First document content -->
+  </ns1:object>
+  <ns1:object class_id="7" class_version="1" id="01005e31803c.1emh0011802881.sm" xmlns:ns1="urn:k461-dke-de:profile_generic-1" xmlns:ns2="urn:k461-dke-de:extension-1">
+    <!-- Second document content -->
+  </ns1:object>
+</merged_data>
+```
+
+### Alternative Version (Preserving Original Structure)
+If you prefer to keep the exact original structure without the `<merged_data>` wrapper, you could modify the script to:
+1. Take the first XML document as the base
+2. Append the content from subsequent documents into the appropriate elements
+
+Would you like me to provide that alternative version instead?
+
+The is the result after the merge, an empty xml?
+Do you have to condider the namespaces in any way?
+
+```xml
+<?xml version='1.0' encoding='utf-8'?>
+<merged_data />
+```
+
+You're absolutely right to point this out! The issue occurs because when we parse and re-serialize the XML, the namespaces aren't being properly preserved. Here's an improved version that:
+
+1. Properly handles namespaces
+2. Maintains all the original XML content
+3. Creates a valid merged structure
+
+```python
+#!/usr/bin/env python3
+import sys
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+def merge_xml_files(input_file, output_file):
+    """Merge multiple XML documents into one valid XML document while preserving namespaces"""
+    try:
+        # Read the entire input file
+        with open(input_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Split into individual XML documents
+        xml_docs = content.split('<?xml version="1.0" encoding="UTF-8"?>')
+        xml_docs = [doc.strip() for doc in xml_docs if doc.strip()]
+        
+        if not xml_docs:
+            print("No XML documents found in input file", file=sys.stderr)
+            return False
+        
+        # Create a root element with all namespaces we find
+        merged_root = ET.Element("merged_data", {
+            'xmlns:ns1': 'urn:k461-dke-de:profile_generic-1',
+            'xmlns:ns2': 'urn:k461-dke-de:extension-1'
+        })
+        
+        # Parse each XML document and add its content to our merged document
+        for doc in xml_docs:
+            try:
+                # Add the XML declaration back since we split on it
+                xml_content = '<?xml version="1.0" encoding="UTF-8"?>' + doc
+                root = ET.fromstring(xml_content)
+                
+                # Create a wrapper element that preserves namespaces
+                wrapper = ET.SubElement(merged_root, "document")
+                wrapper.append(root)
+                
+            except ET.ParseError as e:
+                print(f"Error parsing XML document: {e}", file=sys.stderr)
+                continue
+        
+        # Create the tree and write with proper namespace handling
+        tree = ET.ElementTree(merged_root)
+        
+        # Register namespaces to prevent ns0, ns1 prefixes in output
+        ET.register_namespace('ns1', 'urn:k461-dke-de:profile_generic-1')
+        ET.register_namespace('ns2', 'urn:k461-dke-de:extension-1')
+        
+        # Write with pretty formatting
+        with open(output_file, 'wb') as f:
+            tree.write(f, encoding='utf-8', xml_declaration=True, short_empty_elements=False)
+        
+        print(f"Successfully merged XML documents to {output_file}")
+        return True
+    
+    except Exception as e:
+        print(f"Error merging XML files: {e}", file=sys.stderr)
+        return False
+
+if __name__ == '__main__':
+    if len(sys.argv) != 3:
+        print("Usage: python merge_xml.py <input_file.xml> <output_file.xml>", file=sys.stderr)
+        sys.exit(1)
+    
+    input_file = Path(sys.argv[1])
+    output_file = Path(sys.argv[2])
+    
+    if not input_file.exists():
+        print(f"Input file {input_file} does not exist", file=sys.stderr)
+        sys.exit(1)
+    
+    success = merge_xml_files(input_file, output_file)
+    sys.exit(0 if success else 1)
+```
+
+Key improvements:
+
+1. **Namespace Preservation**:
+   - Explicitly declares the namespaces in the root element
+   - Uses `ET.register_namespace()` to maintain proper prefixes
+
+2. **Structure**:
+   - Each original XML document is wrapped in a `<document>` element
+   - Maintains all original content while ensuring valid XML
+
+3. **Output Formatting**:
+   - Uses binary mode writing to ensure proper encoding
+   - Disables short empty elements (`<tag/>`) for better readability
+
+Example output structure:
+
+```xml
+<?xml version='1.0' encoding='utf-8'?>
+<merged_data xmlns:ns1="urn:k461-dke-de:profile_generic-1" xmlns:ns2="urn:k461-dke-de:extension-1">
+  <document>
+    <ns1:object class_id="7" class_version="1" id="01005e31803c.1emh0011802881.sm">
+      <!-- First document content -->
+    </ns1:object>
+  </document>
+  <document>
+    <ns1:object class_id="7" class_version="1" id="01005e31803c.1emh0011802881.sm">
+      <!-- Second document content -->
+    </ns1:object>
+  </document>
+</merged_data>
+```
+
+If you prefer to merge the contents without the `<document>` wrappers, we could instead combine the inner elements directly. Would you like me to provide that alternative version?
+
+can you retrieve the namespaces dynamically
+
+that still does not work.
+
+the result ist again
+
+```xml
+<?xml version='1.0' encoding='utf-8'?>
+<merged_data></merged_data>
+```
+
+and the meesage of the script:
+
+```bash
+Error parsing XML document: junk after document element: line 12034, column 0
+Successfully merged XML documents to /Users/jens/develop/smgw/data/export_2023-01-01__00_00_00---2025-04-18__10_03_09_merged.xml
+```
+line 12034 is the line in the inputfile, where a new xml start.
+
+In the example
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<ns1:object class_id="7" class_version="1" id="01005e31803c.1emh0011802881.sm" xmlns:ns1="urn:k461-dke-de:profile_generic-1" xmlns:ns2="urn:k461-dke-de:extension-1">
+  <ns1:attributes count="3">
+   <ns2:logical_name id="1">01005e31803c.1emh0011802881.sm</ns2:logical_name>
+   <ns1:capture_objects id="2" co...
+
+    </ns1:buffer>
+  </ns1:attributes>
+</ns1:object>
+<?xml version="1.0" encoding="UTF-8"?>      <----- this is line 12034
+<ns1:object class_id="7" class_version="1" id="01005e31803c.1emh0011802881.sm" xmlns:ns1="urn:k461-dke-de:profile_generic-1" xmlns:ns2="urn:k461-dke-de:extension-1">
+  <ns1:attributes count="3">
+   <ns2:logical_name id="1">01005e31803c.1emh0011802881.sm</ns2:logical_name>
+   <ns1:capture_objects id="2" count="1">
+   <ns1:capture_object id="1">....
+    </ns1:buffer>
+  </ns1:attributes>
+</ns1:object>
+```
+
+
+I understand the issue now. The problem is that the XML documents are being concatenated with their XML declarations, which makes the parser fail when trying to read them as individual documents. Here's a robust solution that properly handles this case:
+
+```python
+#!/usr/bin/env python3
+import sys
+import re
+import xml.etree.ElementTree as ET
+from pathlib import Path
+from collections import defaultdict
+
+def extract_xml_documents(content):
+    """Split content into individual XML documents, handling declarations"""
+    # Use regex to split while keeping track of document positions
+    xml_declaration = re.compile(r'<\?xml version="1.0" encoding="UTF-8"\?>')
+    matches = list(xml_declaration.finditer(content))
+    
+    documents = []
+    for i, match in enumerate(matches):
+        start = match.end()
+        end = matches[i+1].start() if i+1 < len(matches) else len(content)
+        doc_content = content[start:end].strip()
+        if doc_content:
+            documents.append(doc_content)
+    return documents
+
+def get_namespaces(xml_content):
+    """Extract all namespaces from XML content"""
+    namespaces = defaultdict(set)
+    try:
+        # Temporarily wrap content to make it valid XML if needed
+        wrapped = f"<root>{xml_content}</root>"
+        root = ET.fromstring(wrapped)
+        for elem in root.iter():
+            if '}' in elem.tag:
+                uri = elem.tag.split('}')[0][1:]
+                prefix = elem.tag.split('}')[1].split(':')[0] if ':' in elem.tag else ''
+                if prefix:
+                    namespaces[prefix].add(uri)
+            for k, v in elem.attrib.items():
+                if '}' in k:
+                    uri = k.split('}')[0][1:]
+                    prefix = k.split('}')[1].split(':')[0] if ':' in k else ''
+                    if prefix:
+                        namespaces[prefix].add(uri)
+    except ET.ParseError as e:
+        print(f"Namespace detection warning: {e}", file=sys.stderr)
+    return namespaces
+
+def merge_xml_files(input_file, output_file):
+    """Merge multiple XML documents into one valid XML document"""
+    try:
+        with open(input_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Split into individual XML documents
+        xml_docs = extract_xml_documents(content)
+        
+        if not xml_docs:
+            print("No valid XML documents found in input file", file=sys.stderr)
+            return False
+
+        # Collect all unique namespaces from all documents
+        all_namespaces = defaultdict(set)
+        for doc in xml_docs:
+            doc_ns = get_namespaces(doc)
+            for prefix, uris in doc_ns.items():
+                for uri in uris:
+                    all_namespaces[prefix].add(uri)
+
+        # Create root element with all namespaces
+        ns_attrs = {}
+        for prefix, uris in all_namespaces.items():
+            ns_key = f'xmlns:{prefix}' if prefix else 'xmlns'
+            ns_attrs[ns_key] = next(iter(uris))  # Take the first URI for each prefix
+
+        merged_root = ET.Element("merged_data", ns_attrs)
+
+        # Process each document
+        for doc in xml_docs:
+            try:
+                # Temporarily wrap the document to make it valid XML
+                wrapped = f"<wrapper>{doc}</wrapper>"
+                wrapper = ET.fromstring(wrapped)
+                
+                # Extract the actual root element (skip our temporary wrapper)
+                if len(wrapper) > 0:
+                    doc_root = wrapper[0]
+                    # Create a container element that preserves document structure
+                    container = ET.SubElement(merged_root, "document")
+                    container.append(doc_root)
+                
+            except ET.ParseError as e:
+                print(f"Error parsing XML document: {e}", file=sys.stderr)
+                continue
+
+        # Register all namespaces
+        for prefix, uris in all_namespaces.items():
+            ET.register_namespace(prefix, next(iter(uris)))
+
+        # Write output with proper formatting
+        tree = ET.ElementTree(merged_root)
+        with open(output_file, 'wb') as f:
+            # Use a custom XML declaration and ensure proper encoding
+            f.write(b'<?xml version="1.0" encoding="UTF-8"?>\n')
+            tree.write(f, 
+                     encoding='utf-8', 
+                     xml_declaration=False,
+                     short_empty_elements=False,
+                     method='xml')
+
+        print(f"Successfully merged {len(xml_docs)} XML documents to {output_file}")
+        return True
+
+    except Exception as e:
+        print(f"Error merging XML files: {e}", file=sys.stderr)
+        return False
+
+if __name__ == '__main__':
+    if len(sys.argv) != 3:
+        print("Usage: python merge_xml.py <input_file.xml> <output_file.xml>", file=sys.stderr)
+        sys.exit(1)
+    
+    input_file = Path(sys.argv[1])
+    output_file = Path(sys.argv[2])
+    
+    if not input_file.exists():
+        print(f"Input file {input_file} does not exist", file=sys.stderr)
+        sys.exit(1)
+    
+    success = merge_xml_files(input_file, output_file)
+    sys.exit(0 if success else 1)
+```
+
+Key improvements:
+
+1. **Robust Document Splitting**:
+   - Uses regex to properly identify XML declarations
+   - Handles documents that might have malformed endings
+
+2. **Namespace Handling**:
+   - Wraps each document temporarily to safely extract namespaces
+   - Handles both element and attribute namespaces
+
+3. **Document Processing**:
+   - Temporarily wraps each document to ensure valid XML during parsing
+   - Preserves the original root elements in the output
+
+4. **Error Handling**:
+   - Continues processing even if some documents fail to parse
+   - Provides detailed error messages
+
+5. **Output Formatting**:
+   - Explicitly writes the XML declaration
+   - Ensures proper UTF-8 encoding
+   - Maintains all original content structure
+
+This version should:
+- Correctly handle your concatenated XML files
+- Preserve all namespaces and document structure
+- Generate valid, well-formed XML output
+- Provide better error reporting when issues occur
+
+The output will look like:
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<merged_data xmlns:ns1="urn:k461-dke-de:profile_generic-1" xmlns:ns2="urn:k461-dke-de:extension-1">
+  <document>
+    <ns1:object class_id="7" class_version="1" id="01005e31803c.1emh0011802881.sm">
+      <!-- First document content -->
+    </ns1:object>
+  </document>
+  <document>
+    <ns1:object class_id="7" class_version="1" id="01005e31803c.1emh0011802881.sm">
+      <!-- Second document content -->
+    </ns1:object>
+  </document>
+</merged_data>
+```
+
+I got no errors, but the namespaces are completely messed up. we need to keep the original namespaces:
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<ns1:object class_id="7" class_version="1" id="01005e31803c.1emh0011802881.sm" xmlns:ns1="urn:k461-dke-de:profile_generic-1" xmlns:ns2="urn:k461-dke-de:extension-1">
+  <ns1:attributes count="3">
+
+...
+
+          </ns1:entry_gateway_signed>
+        </ns1:column>
+       </ns1:simple_data>
+    </ns1:buffer>
+  </ns1:attributes>
+</ns1:object>
+```
+
+Please add some logging, e.g. for every xml you found in the input file.
+
+
+
+What is wrong?
+
+```python
+# df is pandas
+df['_measurement'] = df['_measurement'].split(".")[1]  # Extract part between dots
+```
+
+output:
+```bash
+2025-04-23 09:35:22,391 root     85 ERROR: Error reading from stdin: 'Series' object has no attribute 'split'
+2025-04-23 09:35:22,391 root     650 ERROR: Processing failed: 'Series' object has no attribute 'split'
+```
+The error occurs because you're trying to call `split()` directly on a pandas Series (`df['_measurement']`), which isn't possible. You need to use pandas' string methods for Series operations. Here's how to fix it:
+
+### Correct Approach:
+```python
+# Use .str accessor for string operations on Series
+df['_measurement'] = df['_measurement'].str.split(".").str[1]  # Extract part between dots
+```
+
+### Explanation:
+1. **Problem**: 
+   - `df['_measurement']` returns a pandas Series, not a single string
+   - The `split()` method doesn't exist for Series objects
+
+2. **Solution**:
+   - Use `.str` accessor to apply string methods to each element in the Series
+   - Chain operations: first split, then get the second part (`[1]`)
+
+### Full Example:
+```python
+import pandas as pd
+
+# Sample data
+data = {'_measurement': ['a.b.c', 'x.y.z', '1.2.3']}
+df = pd.DataFrame(data)
+
+# Correct way to split and extract
+df['_measurement'] = df['_measurement'].str.split(".").str[1]
+
+print(df)
+```
+
+### Output:
+```
+  _measurement
+0            b
+1            y
+2            2
+```
+
+### Alternative Methods:
+1. **Using `extract` with regex**:
+```python
+df['_measurement'] = df['_measurement'].str.extract(r'\.(.*?)\.')
+```
+
+2. **Using `apply` with lambda**:
+```python
+df['_measurement'] = df['_measurement'].apply(lambda x: x.split(".")[1])
+```
+
+### Key Points:
+- Always use `.str` for string operations on pandas Series
+- Method chaining (`str.split().str[]`) is efficient and clean
+- The operation will be applied to every row in the Series automatically
+
+This should resolve your error and give you the expected results.
+
+with 
+```python
+df['_measurement'] = df['_measurement'].str.split(".")[1]  # Extract part between dots
+```
+
+i get :
+```bash
+2025-04-23 09:39:39,287 root     85 ERROR: Error reading from stdin: Length of values (3) does not match length of index (49874)
+```
+
+The error occurs because you're trying to select the split result from the Series level rather than from each individual string. Here's the proper way to do it:
+
+### Correct Solution:
+```python
+df['_measurement'] = df['_measurement'].str.split(".").str[1]  # Note the second .str
+```
+
+### Why Your Version Failed:
+1. `df['_measurement'].str.split(".")` returns a Series of lists
+2. Adding `[1]` directly tries to get the second list from the Series, not from each list
+3. This causes the length mismatch error
+
+### Complete Working Example:
+```python
+import pandas as pd
+
+# Sample data matching your structure
+data = {'_measurement': ['01005e31803c.1emh0011802881.sm', 
+                        '01005e31803c.2emh0011802881.sm',
+                        '01005e31803c.3emh0011802881.sm']}
+df = pd.DataFrame(data)
+
+# Correct extraction of the middle part
+df['_measurement'] = df['_measurement'].str.split(".").str[1]
+
+print(df)
+```
+
+### Output:
+```
+  _measurement
+0  1emh0011802881
+1  2emh0011802881
+2  3emh0011802881
+```
+
+### Alternative Robust Solutions:
+
+1. **Using extract with regex** (more explicit):
+```python
+df['_measurement'] = df['_measurement'].str.extract(r'^[^\.]+\.([^\.]+)\.')
+```
+
+2. **Using rsplit with n=1** (if you only need the last part):
+```python
+df['_measurement'] = df['_measurement'].str.rsplit(".", n=1).str[0]
+```
+
+3. **Handling potential missing values**:
+```python
+df['_measurement'] = df['_measurement'].str.split(".").str[1].fillna('unknown')
+```
+
+### Key Points:
+- Always chain `.str` when working with string operations in pandas
+- The operation `str.split().str[n]` applies to each element in the Series
+- For your smart meter data, this will properly extract the middle identifier part
+- The solution will work with your 49,874 rows of data
+
+This should resolve your length mismatch error while correctly extracting the measurement values between the dots.
+
+with python I wnat to format a string e.g. "1itr0310077721".
+If it has 14 characters, then 
+first char + underscore
+char two to char 4 in Upper case followed by char 5 and char 6 and an underscore
+then char 7 to char 10 and a underscore
+then char 11 to char 14
+
+I want to apply that logic to df['_measurement'].str.split(".").str[1], i.e. a oneliner is preferred.
+
+Here's a concise one-liner using pandas' `.str` accessor with regex replacement to format your measurement strings:
+
+```python
+df['formatted'] = (
+    df['_measurement'].str.split(".", expand=True)[1]
+    .str.replace(
+        r'^(.{1})(.{3})(.{2})(.{4})(.{4})$',
+        r'\1_\2\3\4_\5_\6',
+        regex=True
+    )
+    .str.upper()
+)
+```
+
+### Explanation:
+1. `split(".", expand=True)[1]` - Splits on dots and takes the second part
+2. `str.replace()` with regex pattern:
+   - `^(.{1})` - First character (group 1)
+   - `(.{3})` - Next 3 characters (group 2)
+   - `(.{2})` - Next 2 characters (group 3) 
+   - `(.{4})` - Next 4 characters (group 4)
+   - `(.{4})$` - Last 4 characters (group 5)
+3. Replacement pattern `\1_\2\3\4_\5_\6` adds the underscores
+4. `.str.upper()` - Converts the relevant parts to uppercase
+
+### Example Transformation:
+For input `"1itr0310077721"`:
+1. Split gets `"1itr0310077721"`
+2. Regex groups:
+   - Group 1: `"1"`
+   - Group 2: `"itr"` 
+   - Group 3: `"03"`
+   - Group 4: `"1007"`
+   - Group 5: `"7721"`
+3. Output: `"1_ITR031007_7721"`
+
+### Complete One-Liner:
+```python
+df['formatted'] = df['_measurement'].str.split(".", expand=True)[1].str.replace(r'^(.{1})(.{3})(.{2})(.{4})(.{4})$', r'\1_\2\3\4_\5_\6', regex=True).str.upper()
+```
+
+This handles all the formatting in a single pandas operation while maintaining vectorized performance. The pattern will only match strings with exactly 14 characters.
+
+I am missing the underscore after "char two to char 4 in Upper case followed by char 5 and char 6 and an underscore" in your example.
+
+Ah, I see - you want an additional underscore after the uppercase letters (chars 2-4) and the following two characters (chars 5-6). Here's the corrected one-liner:
+
+```python
+df['formatted'] = (
+    df['_measurement'].str.split(".", expand=True)[1]
+    .str.replace(
+        r'^(.{1})(.{3})(.{2})(.{4})(.{4})$',
+        r'\1_\2_\3_\4_\5',  # Added underscore after group 2 (chars 2-4)
+        regex=True
+    )
+    .str.upper()
+)
+```
+
+### Breakdown of the pattern:
+For input `"1itr0310077721"` (14 chars):
+1. `(.{1})` → `"1"` (group 1)
+2. `(.{3})` → `"itr"` (group 2 - will be uppercased)
+3. `(.{2})` → `"03"` (group 3)
+4. `(.{4})` → `"1007"` (group 4)
+5. `(.{4})` → `"7721"` (group 5)
+
+### Corrected transformation:
+Now produces: `"1_ITR_03_1007_7721"`
+
+### Full one-liner version:
+```python
+df['formatted'] = df['_measurement'].str.split(".", expand=True)[1].str.replace(r'^(.{1})(.{3})(.{2})(.{4})(.{4})$', r'\1_\2_\3_\4_\5', regex=True).str.upper()
+```
+
+### Key changes:
+1. Added underscore after `\2` (the 3 uppercase letters)
+2. Kept underscore after `\3` (next 2 chars)
+3. Maintained all other formatting rules
+
+This now matches your exact specification:
+1. First char + underscore  
+2. Chars 2-4 (uppercase) + underscore  
+3. Chars 5-6 + underscore  
+4. Chars 7-10 + underscore  
+5. Chars 11-14
+
+Can you test in the one liner, wheter the strin has 14 chars and apply the logic only if it has 14 char else leave df['_measurement'].str.rsplit(".", n=1).str[0]
+
+Here's the complete one-liner that checks for 14 characters and only applies the formatting if the condition is met, otherwise keeps the original value:
+
+```python
+df['formatted'] = (
+    df['_measurement'].str.split(".", expand=True)[1]
+    .where(
+        df['_measurement'].str.split(".", expand=True)[1].str.len() == 14,
+        df['_measurement'].str.rsplit(".", n=1).str[0]
+    )
+    .str.replace(
+        r'^(.{1})(.{3})(.{2})(.{4})(.{4})$',
+        r'\1_\2_\3_\4_\5',
+        regex=True
+    )
+    .str.upper()
+)
+```
+
+However, this might not work perfectly because the `.str.replace()` would still try to process the non-14-character strings. Here's a more robust version using `np.where()`:
+
+```python
+import numpy as np
+
+df['formatted'] = np.where(
+    df['_measurement'].str.split(".", expand=True)[1].str.len() == 14,
+    df['_measurement'].str.split(".", expand=True)[1]
+        .str.replace(r'^(.{1})(.{3})(.{2})(.{4})(.{4})$', r'\1_\2_\3_\4_\5', regex=True)
+        .str.upper(),
+    df['_measurement'].str.rsplit(".", n=1).str[0]
+)
+```
+
+### Explanation:
+1. Checks if the split part has exactly 14 characters
+2. If true:
+   - Applies the regex formatting
+   - Converts relevant parts to uppercase
+3. If false:
+   - Returns everything before the last dot (original behavior)
+4. Uses `np.where()` for efficient conditional logic
+
+### Alternative with lambda (more readable but slightly slower):
+```python
+df['formatted'] = df['_measurement'].apply(
+    lambda x: (
+        (parts := x.split("."))[1].replace(
+            r'^(.{1})(.{3})(.{2})(.{4})(.{4})$',
+            r'\1_\2_\3_\4_\5',
+            count=1
+        ).upper()
+        if len(parts[1]) == 14
+        else x.rsplit(".", 1)[0]
+)
+```
+
+Choose the version that best fits your performance needs vs. readability preferences. The numpy version will be fastest for large DataFrames.
+
+With 
+```python
+    df['_measurement'] = df['_measurement'].apply(
+                                                lambda x: (
+                                                    (parts := x.split("."))[1].replace(
+                                                        r'^(.{1})(.{3})(.{2})(.{4})(.{4})$',
+                                                        r'\1_\2_\3_\4_\5',
+                                                        count=1
+                                                    ).upper()
+                                                    if len(parts[1]) == 14
+                                                    else x.rsplit(".", 1)[0]
+                                                )
+                                            )
+```
+
+I get
+```python
+2025-04-23 11:26:31,641 root     102 ERROR: Error reading from stdin: cannot access local variable 'parts' where it is not associated with a value
+```

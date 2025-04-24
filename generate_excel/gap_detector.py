@@ -237,6 +237,8 @@ def main():
 
     # 2. Remove duplicate rows (keeping the first occurrence - which will be the youngest due to sorting)
     df = df.drop_duplicates() 
+
+    print(df.head(5))  # Print the first 5 rows for debugging
     
     # Detect gaps
     tz = pytz.timezone(args.timezone)
