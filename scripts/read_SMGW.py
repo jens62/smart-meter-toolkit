@@ -826,6 +826,7 @@ Examples:
             self.logger.debug(f"Generating outputs for {len(data_entries)} entries")
             
             outputs = {}
+            outputs['cms_files'] = []
             df = pd.DataFrame(data_entries).drop_duplicates()
 
             # Generate output filename base
@@ -900,6 +901,7 @@ Examples:
                         with open(cms_file, 'rb') as src, open(dest_file, 'wb') as dest:
                             dest.write(src.read())
                         self.logger.debug(f"Copied CMS file to {dest_file}")
+                        outputs['cms_files'].append(str(dest_file))
                 except Exception as e:
                     self.logger.error(f"CMS file copy failed: {str(e)}")
 
