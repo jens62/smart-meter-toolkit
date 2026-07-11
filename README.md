@@ -11,6 +11,18 @@ All of this may be of particular interest to those who do not use home automatio
 
 The Python scripts in the scripts folder may help. The scripts can be copied, and apart from a few Python modules, no installation is required.
 
+## Requirements
+
+The Python scripts need Python 3 plus a few third-party packages: `pandas`, `openpyxl`, `requests`, `beautifulsoup4`.
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install pandas openpyxl requests beautifulsoup4
+```
+
+On macOS, the system `python3` is usually "externally managed" by Homebrew, which blocks a plain `pip install`. Use a venv as shown above instead of fighting that.
+
 ## Quickstart
 
 ### reading from Smart Meter
@@ -68,6 +80,54 @@ python read_SMGW.py \
 #### Usage
 Use the usual `--help` or `--h` to be overwhelmed by the possibilities.
 
+### Output format
+
+`meter_reading2consumption.py` writes one Excel workbook per run: a `Verbrauch` sheet with one row per month (`Monat` / `Verbrauch [kWh]`, using the formula `=MAX('YYYY_MM'!B:B)-MIN('YYYY_MM'!B:B)`), plus one sheet per `YYYY_MM` present in the data (`Zeit der Messung` / `Zählerstand [kWh]` / `Zähleridentifikation`). The output filename is generated from the *first* row's meter id and the covered time range, so if you feed it data mixing more than one meter, only one meter shows up in the filename.
+
+`--folder` only scans the **top level** of a directory (not recursive) for files matching `--pattern` (default: any `.csv`).
+
+## Additional scripts
+
+### Normalizing raw CSV exports
+
+If you let the gateway export run continuously, you'll end up with two different CSV schemas in your data over time: an older full-dump format (`logical_name;capture_time;value;scaler;unit;status;signature`, with the meter id on every row) and a newer per-window export format (`id;value;scaler;unit;status;capture_time`, with no meter id column at all — the id only lives in that file's sibling XML/JSON, once per file). `scripts/normalize_meter_csv.awk` auto-detects which schema each input file uses and emits a uniform `_time;_value;_measurement` stream, filtered to a `[lo, hi)` UTC time window (edit the `BEGIN` block to change the window; the meter id can also be overridden without editing the file via `-v meter=...`):
+
+```bash
+echo "_time;_value;_measurement" > out.csv
+find data -maxdepth 1 -name '*.csv' -print0 \
+  | xargs -0 awk -f scripts/normalize_meter_csv.awk -- >> out.csv
+```
+
+`xargs` batches the file list automatically, which matters once `data/` accumulates tens of thousands of small export files — passing them all directly to one `awk` invocation would hit the OS's argument-length limit.
+
+### Filling gaps in already-exported data
+
+If a gap-detection pass turns up missing readings, `read_SMGW.py` can re-request each gap window directly from the gateway (it often still has the data in its own history, even if an earlier export missed it):
+
+```bash
+python read_SMGW.py \
+    --user <user> --password <password> --meter <meter> \
+    --from "2025-04-07 00:45:00" --to "2025-04-07 05:45:00" \
+    --out-path <path>
+```
+
+Two things to know:
+- `--out-path X` writes into `X/data/`, not `X` directly.
+- Each request is a full digest-auth handshake plus several sequential POSTs, so it's slow — batches of more than ~6 requests can approach the default shell timeout. Run larger gap lists in a few sequential batches.
+
+### Adding a gaps overview to the `Verbrauch` sheet
+
+`generate_excel/add_gaps_to_verbrauch.py` inserts a "Lücken" (gaps) block — Start / Ende / Dauer columns, with a live `=Ende-Start` duration formula — into an existing workbook's `Verbrauch` sheet, using `generate_excel/gap_detector.py` for the actual gap detection:
+
+```bash
+python3 generate_excel/add_gaps_to_verbrauch.py \
+    --xlsx <workbook>.xlsx \
+    --input <normalized>.csv \
+    --delta 20m
+```
+
+`--delta` is the threshold above which a gap between two consecutive readings gets reported — set it to a bit more than your normal reading interval (e.g. `20m` for 15-minute readings).
+
 ## Getting Started: The Full Guide
 
 If you have meters for electricity, water, gas, etc., you may want to read them.
@@ -85,6 +145,8 @@ There are some useful Python scripts for processing the data, such as calculatin
 
 There is separate documentation for each of the different topics:
 - [Using the PPC Smart Meter Gateway](docs/Using_the_PPC_Smart_Meter_Gateway.md)
+
+To write readings from the gateway directly into an InfluxDB v2 bucket, see `scripts/smgw2influx.sh`. To cross-check a local CSV export against what ended up in InfluxDB — useful for telling real device-side data loss apart from a pipeline-specific gap — see `scripts/compare_influxdb_gaps.py` and `scripts/compare_influxdb_values.py`.
 
 
 
