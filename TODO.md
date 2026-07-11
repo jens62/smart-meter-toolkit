@@ -95,20 +95,20 @@ total, at every month boundary in the workbook.
       `=MIN('2025_07'!B:B)-MIN('2025_06'!B:B)` for June's row (next
       month's first reading minus this month's first reading), instead of
       `MAX-MIN` within the same sheet
-- [ ] Handle the last month in the workbook: there's no "next month" sheet
-      to reference yet, so it can't use the chained formula — fall back to
-      the current `MAX-MIN` approximation for that one row, or mark it as
-      incomplete
-- [ ] Special case: the exact border reading (e.g. 2025-07-01 00:00) might
-      itself be missing due to a gap. In that case `MIN('2025_07'!B:B)`
-      would silently pick up the first reading *after* the gap instead of
-      the true boundary value, attributing part of July's gap-period
-      consumption to June and inflating June's total. Needs a check
-      (e.g. compare the next month's actual first-reading timestamp
-      against the expected start-of-month timestamp) that falls back to
-      `MAX('2025_06'!B:B)` for that boundary when the true border reading
-      isn't available — ideally cross-referenced with the gap tracking
-      from item 2 above
+- [ ] Fall back to the current `MAX('2025_06'!B:B)` approximation for a
+      month's end boundary whenever the true next-month border reading
+      (e.g. 2025-07-01 00:00) isn't available to chain against — this
+      covers two distinct triggers with the same fix: (a) the last month
+      in the workbook, where no "next month" sheet exists yet at all, and
+      (b) an existing next-month sheet whose first reading is delayed by a
+      gap, where naively using `MIN('2025_07'!B:B)` would silently pick up
+      the first post-gap reading instead of the true boundary value and
+      inflate the current month's total with part of the next month's
+      gap-period consumption. Needs a check (e.g. compare the next month's
+      actual first-reading timestamp against the expected start-of-month
+      timestamp) to detect case (b) — ideally cross-referenced with the
+      gap tracking from item 2 above. Consider marking a row using this
+      fallback as approximate either way.
 - [ ] Check whether `generate_excel/add_gaps_to_verbrauch.py` or any other
       script relies on the old per-month `MAX-MIN` formula/assumption and
       needs updating too
