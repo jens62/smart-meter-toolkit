@@ -56,7 +56,7 @@ New script, run once per night via cron, that:
 - [ ] Add this as a daily cron job and document it in
       `scripts/crontab.example`
 
-## 4. Double-check a possibly corrupted line in the Mikrotik config example
+## 4. ~~Double-check a possibly corrupted line in the Mikrotik config example~~ (resolved: not corrupted)
 
 In `docs/Using_the_PPC_Smart_Meter_Gateway.md`, the RouterOS config block
 under "Einsatz eines Routers" has:
@@ -65,9 +65,12 @@ under "Einsatz eines Routers" has:
 add bridge=*C tagged=*C untagged=ether4 vlan-ids=1
 ```
 
-`*C` isn't valid RouterOS syntax. The next line (`add bridge=bridge-vlan00
-untagged=ether4 vlan-ids=1`, same interface/vlan-id) looks like what this
-line was supposed to say, making this a corrupted stray duplicate rather
-than a real second rule. Needs manual verification against the actual
-router config before fixing, since it's real infrastructure config, not
-just prose.
+Originally flagged as invalid/corrupted. Verified (2026-07-11): `*C` is a
+legitimate RouterOS internal object-ID reference (MikroTik's `*hex-id`
+format) — `bridge=`/`tagged=` accept either a symbolic name or this ID
+form. The line also mirrors the self-referencing pattern of the line above
+it (`bridge=bridge-vlan10 tagged=bridge-vlan10 ...`), and the whole config
+block is full of `comment=defconf` entries confirming it's a raw, unedited
+`/export` dump — exactly where RouterOS is likely to emit an ID instead of
+a name for a default/system-managed bridge. No action needed; doc is
+accurate as-is.
