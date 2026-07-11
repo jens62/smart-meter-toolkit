@@ -177,3 +177,6 @@ cython_debug/
 .ruff_cache/
 
 # PyPI configuration file
+
+# Local-only assets, never checked in
+/local-assets/
