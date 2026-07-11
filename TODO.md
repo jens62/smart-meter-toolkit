@@ -55,3 +55,19 @@ New script, run once per night via cron, that:
       regenerates the whole workbook from a full input range)
 - [ ] Add this as a daily cron job and document it in
       `scripts/crontab.example`
+
+## 4. Double-check a possibly corrupted line in the Mikrotik config example
+
+In `docs/Using_the_PPC_Smart_Meter_Gateway.md`, the RouterOS config block
+under "Einsatz eines Routers" has:
+
+```
+add bridge=*C tagged=*C untagged=ether4 vlan-ids=1
+```
+
+`*C` isn't valid RouterOS syntax. The next line (`add bridge=bridge-vlan00
+untagged=ether4 vlan-ids=1`, same interface/vlan-id) looks like what this
+line was supposed to say, making this a corrupted stray duplicate rather
+than a real second rule. Needs manual verification against the actual
+router config before fixing, since it's real infrastructure config, not
+just prose.

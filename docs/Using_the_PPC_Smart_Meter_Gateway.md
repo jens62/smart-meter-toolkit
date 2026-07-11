@@ -17,11 +17,8 @@ Dieses Kapitel wird in deutscher Sprache verfasst, da es sich um ein Thema hande
     - [Für Privatpersonen](https://www.ppc-ag.de/de/produkte/support/)
       - [SMGW-Handbuch](https://www.ppc-ag.de/wp-content/uploads/2023/04/Handbuch-fuer-Verbraucher-v.4.15.pdf)
 
-## - [Using the PPC Smart Meter Gateway](#using-the-ppc-smart-meter-gateway)
-        - [Links zur Web-Site von PPC zum Smart Meter Gateway](#links-zur-web-site-von-ppc-zum-smart-meter-gateway)
 - [Using the PPC Smart Meter Gateway](#using-the-ppc-smart-meter-gateway)
-        - [Links zur Web-Site von PPC zum Smart Meter Gateway](#links-zur-web-site-von-ppc-zum-smart-meter-gateway)
-  - [- Using the PPC Smart Meter Gateway](#--using-the-ppc-smart-meter-gateway)
+  - [Links zur Web-Site von PPC zum Smart Meter Gateway](#links-zur-web-site-von-ppc-zum-smart-meter-gateway)
     - [Verbindungstest](#verbindungstest)
     - [DHCP oder andere IP-Adresse vom Messstellenbetreiber anfordern](#dhcp-oder-andere-ip-adresse-vom-messstellenbetreiber-anfordern)
     - [Zugriff auf das Subnetz 192.168.1.0/24 und/oder die Gateway IP 192.168.1.200 aus einem anderen Subnetz](#zugriff-auf-das-subnetz-1921681024-undoder-die-gateway-ip-1921681200-aus-einem-anderen-subnetz)
@@ -30,16 +27,16 @@ Dieses Kapitel wird in deutscher Sprache verfasst, da es sich um ein Thema hande
         - [Vergabe einer festen IP *192.168.1.14* für das Subnetz des Smart Meter (192.168.1.0/24)](#vergabe-einer-festen-ip-192168114-für-das-subnetz-des-smart-meter-1921681024)
       - [OpenWrt auf einer alten Fritz!Box 7490](#openwrt-auf-einer-alten-fritzbox-7490)
       - [Einsatz eines Routers](#einsatz-eines-routers)
-  - [Abruf der Zählerstände](#abruf-der-zählerstände)
+  - [Abruf der Zählerstände vom SMGw](#abruf-der-zählerstände-vom-smgw)
     - [Manuelle Verfahren zum Abruf der Zählerstände](#manuelle-verfahren-zum-abruf-der-zählerstände)
       - [Nutzung der Web-Anwendung](#nutzung-der-web-anwendung)
-      - [Nutzung der TRuDI Software](#nutzung-der-trudi-software)
+      - [Nutzung der TRuDI - Transparenz- und Display-Software](#nutzung-der-trudi---transparenz--und-display-software)
     - [Automatisierter Abruf der Zählerstände](#automatisierter-abruf-der-zählerstände)
 
 
 Als Router für das "Hausnetz" im Subnetz 192.168.0.0/24 verwende ich eine Fritz!Box mit der IP 192.168.0.1. Bisher sind alle Geräte in diesem Subnetz versammelt.
 
-Mein PPC LTE Smart Meter Gateway (*SMGw*)hat eine **feste IP-Adresse**: 192.168.1.200.
+Mein PPC LTE Smart Meter Gateway (*SMGw*) hat eine **feste IP-Adresse**: 192.168.1.200.
 Die Adresse wird nicht über DHCP bezogen, es ist **kein Standard-Gateway** im Smart Meter Gateway gesetzt.
 Wer sein Hausnetz nicht im Subnetz 192.168.1.0/24 betreibt, wird zunächst Schwierigkeiten haben das Gateway zu erreichen.
 Im [Handbuch](https://www.ppc-ag.de/wp-content/uploads/2023/04/Handbuch-fuer-Verbraucher-v.4.15.pdf) steht dazu:
@@ -48,17 +45,17 @@ Im [Handbuch](https://www.ppc-ag.de/wp-content/uploads/2023/04/Handbuch-fuer-Ver
 Zum Test des Zugriffs auf das Smart Meter kann ein Rechner manuell mit einer IP-Adresse aus dem Subnetz 192.168.1.0/24 versorgt werden. Mit einer direkten Verbindung über ein Ethernet-Kabel sollte die Verbindung möglich sein.
 
 ### Verbindungstest
-Nach der physischen mit einem Rechner im Subnetz 192.168.1.0/24 habe ich zunächst mittels `curl` den Zugriff getestet. Das läuft auf einer niedrigen Ebene, damit sind mindestens einige Fehlerquellen ausgeschlossen. Auf `ping` reagiert das Gateway nicht.
+Nach der physischen Verbindung mit einem Rechner im Subnetz 192.168.1.0/24 habe ich zunächst mittels `curl` den Zugriff getestet. Das läuft auf einer niedrigen Ebene, damit sind mindestens einige Fehlerquellen ausgeschlossen. Auf `ping` reagiert das Gateway nicht.
 
 ```bash
 curl -t '' --connect-timeout 2 -s telnet://"192.168.1.200:443" </dev/null ; echo $?
 ```
-Bei einer intakten Verbindung liefert `curl` **49**  als exit status zurück.
+Bei einer intakten Verbindung liefert `curl` **49** als exit status zurück.
 
 Die für unser Szenario relevanten *exit codes* (siehe auch [everything curl - Exit code - Available exit codes](https://everything.curl.dev/cmdline/exitcode.html)):
 
  >**6** - Couldn't resolve host.
- **7** - Failed to connect to host. curl managed to get an IP address to themachine and it tried to setup a TCP connection to the host but failed.This can be because you have specified the wrong port number, entered thewrong host name, the wrong protocol or perhaps because there is a firewallor another network equipment in between that blocks the traffic fromgetting through.
+ **7** - Failed to connect to host. curl managed to get an IP address to the machine and it tried to setup a TCP connection to the host but failed. This can be because you have specified the wrong port number, entered the wrong host name, the wrong protocol or perhaps because there is a firewall or another network equipment in between that blocks the traffic from getting through.
 **28** - Operation timeout.
 **49** - connected to host on port. I.e. OK in this scenario. (Malformed telnet option. The telnet options you provide to curl was not using the correct syntax.)
 
@@ -106,16 +103,16 @@ Im [Handbuch](https://www.ppc-ag.de/wp-content/uploads/2023/04/Handbuch-fuer-Ver
 
 Klappt die Verbindung wird nach einem Zertifikat gefragt. Der Ablauf ist im [Handbuch](https://www.ppc-ag.de/wp-content/uploads/2023/04/Handbuch-fuer-Verbraucher-v.4.15.pdf) detailliert beschrieben.
 
-Ich habe vom Messstellenbetreiber - auch nach Anfrage - kein Zertifikat, sondern lediglich ein Benutzernamen und ein Kennwort erhalten. Für meine Zwecke reicht das aus.
+Ich habe vom Messstellenbetreiber - auch nach Anfrage - kein Zertifikat, sondern lediglich einen Benutzernamen und ein Kennwort erhalten. Für meine Zwecke reicht das aus.
 
 
 ### DHCP oder andere IP-Adresse vom Messstellenbetreiber anfordern
-Nach dem o.g. Zitat aus dem Handbuch kann man den Messtellenbetreiber fragen, ob er das Gateway entweder auf DHCP umstellen oder eine andere IP-Adresse zuweisen kann.
+Nach dem o.g. Zitat aus dem Handbuch kann man den Messstellenbetreiber fragen, ob er das Gateway entweder auf DHCP umstellen oder eine andere IP-Adresse zuweisen kann.
 
 Ich habe dazu von Herrn [Thomas Müller](#contact) die folgende Information bekommen:
 >Grundsätzlich können die SMGWs an der HAN-Schnittstelle schon auch DHCP. Wie die Schnittstelle konfiguriert wird, liegt in den Händen des jeweiligen Versorgungsunternehmens – nachträglich wird das aber sicherlich keiner ändern. Man will sich da keine Problem durch das Kunden-Netzwerk einfangen und möglichst alles einheitlich halten.
 
-Sträubt sich der Messtellenbetreiber gegen diese Lösung (das war bei mir der Fall), gilt es den Zugriff mittels Netzwerkgymnastik zu realisieren.
+Sträubt sich der Messstellenbetreiber gegen diese Lösung (das war bei mir der Fall), gilt es den Zugriff mittels Netzwerkgymnastik zu realisieren.
 
 Für diesen Zweck bieten sich sicherlich viele Möglichkeiten an, ich möchte drei Lösungswege beschreiben:
 
@@ -210,7 +207,7 @@ wlan0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
 
 **Die KI (hier DeepSeek) hat mir gesagt, was ich tun muss um die Netze zu verbinden:**
 
-> To configure NAT (Network Address Translation) or masquerading on a Raspberry Pi for the > `192.168.0.0/24` network to its own IP address (`192.168.1.14`) on the `192.168.1.0/24` > network, you need to set up IP forwarding and configure `iptables` rules. Here's a > step-by-step guide:
+> To configure NAT (Network Address Translation) or masquerading on a Raspberry Pi for the `192.168.0.0/24` network to its own IP address (`192.168.1.14`) on the `192.168.1.0/24` network, you need to set up IP forwarding and configure `iptables` rules. Here's a step-by-step guide:
 > 
 > ---
 > 
@@ -238,8 +235,8 @@ wlan0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
 >    sudo iptables -t nat -A POSTROUTING -s 192.168.0.0/24 -o eth0 -j MASQUERADE
 >    ```
 >    - `-s 192.168.0.0/24`: Specifies the source network (`192.168.0.0/24`).
->    - `-o eth0`: Specifies the outgoing interface (replace `eth0` with the correct interface > name, e.g., `wlan0` for Wi-Fi).
->    - `-j MASQUERADE`: Masquerades the traffic, replacing the source IP with the Raspberry > Pi's IP (`192.168.1.14`).
+>    - `-o eth0`: Specifies the outgoing interface (replace `eth0` with the correct interface name, e.g., `wlan0` for Wi-Fi).
+>    - `-j MASQUERADE`: Masquerades the traffic, replacing the source IP with the Raspberry Pi's IP (`192.168.1.14`).
 > 
 > 2. Allow forwarding between the two networks:
 >    ```bash
@@ -270,18 +267,18 @@ wlan0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
 >    ```bash
 >    sudo iptables -t nat -L -n -v
 >    ```
-> 2. Test connectivity from a device in the `192.168.0.0/24` network to a device in the `192.> 168.1.0/24` network.
+> 2. Test connectivity from a device in the `192.168.0.0/24` network to a device in the `192.168.1.0/24` network.
 > 
 > ---
 > 
 > ##### **Optional: Set Up Static Routes**
-> If devices in the `192.168.0.0/24` network need to reach the `192.168.1.0/24` network, > ensure they have a route pointing to the Raspberry Pi's IP address (`192.168.0.x`) as the > gateway.
+> If devices in the `192.168.0.0/24` network need to reach the `192.168.1.0/24` network, ensure they have a route pointing to the Raspberry Pi's IP address (`192.168.0.x`) as the gateway.
 > 
 > ---
 > 
-> This setup will allow devices in the `192.168.0.0/24` network to access the `192.168.1.0/> 24` network through the Raspberry Pi, with the Pi performing NAT/masquerading.
+> This setup will allow devices in the `192.168.0.0/24` network to access the `192.168.1.0/24` network through the Raspberry Pi, with the Pi performing NAT/masquerading.
 
-Ich habe dann noch einen Switch mit dem Raspberry und darüber einen WLAN Access Point verbunden. So habe ich auch das Subnetz 912.168.1.0/24 des SMGw im Haus verfügbar.
+Ich habe dann noch einen Switch mit dem Raspberry und darüber einen WLAN Access Point verbunden. So habe ich auch das Subnetz 192.168.1.0/24 des SMGw im Haus verfügbar.
 
 Wer mag, kann dann noch [Raspberry Pi: DNSMASQ als DHCP-Server einrichten](https://www.elektronik-kompendium.de/sites/raspberry-pi/2202031.htm):
 
@@ -350,8 +347,8 @@ config zone
 ...
 ```
 
-LAN2 mit dem Subnetz 192.168.0.0/24 verbinden
-LAN3 mit dem SMGw verbinde.
+LAN2 mit dem Subnetz 192.168.0.0/24 verbunden.
+LAN3 mit dem SMGw verbunden.
 Die **statische Route auf der Fritz!Box** nicht vergessen: Zielnetz: 192.168.1.0, Maske: 255.255.255.0, Gateway: 192.168.0.254 
 
 #### Einsatz eines Routers
@@ -361,7 +358,7 @@ Die Lösung, die sich für mich am besten anfühlt, basiert auf dem Einsatz eine
 Nutzen:
 - Transparenter Zugriff zwischen allen Geräten der Subnetze 192.168.0.0/24 und 192.168.1.0/24 mit der Möglichkeit der feingranularen Justierung.
 - Zugriff auf das Internet über das bestehende Hausnetz (192.168.0.0/24) mit der Fritz!Box 192.168.0.1 als Router.
-- Keine Veränderung am bestehenden Hausnetz (192.168.0.0/24) bis auf die ergänzung einer statischen Route.
+- Keine Veränderung am bestehenden Hausnetz (192.168.0.0/24) bis auf die Ergänzung einer statischen Route.
 
 Ich habe mich für einen [Mikrotik RB5009UPr+S+IN](https://help.mikrotik.com/docs/spaces/UM/pages/141197359/RB5009UPr+S+IN) entschieden.
 
@@ -495,13 +492,13 @@ Das ist ja selbst für einen Laien selbsterklärend ;-). Für Netzwerk-[Honks](h
 Die Nutzung der Web-Anwendung ist im [Handbuch](https://www.ppc-ag.de/wp-content/uploads/2023/04/Handbuch-fuer-Verbraucher-v.4.15.pdf) gut beschrieben.
 #### Nutzung der TRuDI - Transparenz- und Display-Software
 
-Die TRuDI-Software und Dookumentation findet man bei der Physikalisch-Technischen Bundesanstalt: [Transparenz- und Displaysoftware TRuDI](https://www.ptb.de/cms/ptb/fachabteilungen/abt2/fb-23/ag-234/info-center-234/trudi.html). Das Handbuch gibt es jeweils beim link zur entsprechenden TRuDI-Version.
+Die TRuDI-Software und Dokumentation findet man bei der Physikalisch-Technischen Bundesanstalt: [Transparenz- und Displaysoftware TRuDI](https://www.ptb.de/cms/ptb/fachabteilungen/abt2/fb-23/ag-234/info-center-234/trudi.html). Das Handbuch gibt es jeweils beim Link zur entsprechenden TRuDI-Version.
 
-Dort findet man auch den link zum TRuDI repository [trudi-public](https://bitbucket.org/dzgtrudi/trudi-public/src/master/) und einen hilfreichen Kontakt:
+Dort findet man auch den Link zum TRuDI-Repository [trudi-public](https://bitbucket.org/dzgtrudi/trudi-public/src/master/) und einen hilfreichen Kontakt:
 
 >Thomas Müller
-IVU Softwareentwicklung GmbH
-tmueller@ivugmbh.de
+>IVU Softwareentwicklung GmbH
+>tmueller@ivugmbh.de
 
 
 
@@ -511,8 +508,8 @@ Für den automatisierten Abruf hat mir der o.g.
 <a id="contact"></a>
 
 >Thomas Müller
-IVU Softwareentwicklung GmbH
-tmueller@ivugmbh.de
+>IVU Softwareentwicklung GmbH
+>tmueller@ivugmbh.de
 
 auf die Sprünge geholfen. Er hat mir ausgesprochen hilfsbereit, schnell und umfassend auf meine Fragen geantwortet. Vielen Dank dafür!
 
@@ -520,14 +517,14 @@ Herr Müller hat die bedauerliche Nachricht überbracht, dass das *SMGw* über k
 
 >Das SMGW von PPC hat leider keine REST-Schnittstelle – ein Umstand, den wir selbst seit Jahren beim Hersteller bemängeln. TRuDI holt sich die Daten aus den altbackenen HTML-Seiten des Gateways – echt kein Spaß.
 
-Ich wollte gerne kontinierlich, am liebsten bei jeder Änderungen, unseren Stromverbrauch aufzeichnen und damit die Möglichkeit haben, Energiefresser zu identifizieren.
+Ich wollte gerne kontinuierlich, am liebsten bei jeder Änderung, unseren Stromverbrauch aufzeichnen und damit die Möglichkeit haben, Energiefresser zu identifizieren.
 
-Herr Müller hat mir die Vorraussetzungen genannt:
+Herr Müller hat mir die Voraussetzungen genannt:
  
 >ohne einen konfigurierten TAF14 haben Sie maximal auf 15-Minuten-Werte Zugriff.
 TAF14 steht für „Tarifanwendungsfall zur hochfrequenten Bereitstellung von Messwerten für Mehrwertdienste“.
 
-OK, also gebenich mich mit Werten vom SMGw alle 15 Minuten zufrieden und übe mich im Web Scraping.
+OK, also gebe ich mich mit Werten vom SMGw alle 15 Minuten zufrieden und übe mich im Web Scraping.
 
 
 
