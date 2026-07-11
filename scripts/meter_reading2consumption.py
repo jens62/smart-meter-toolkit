@@ -305,13 +305,9 @@ def generate_excel_output(df, output_dir, measurement_name, unit, timezone, logg
         time_range = f"from_{df['_time'].min().strftime('%Y-%m-%d_%H-%M-%S')}_to_{df['_time'].max().strftime('%Y-%m-%d_%H-%M-%S')}"
         output_filename = f"{measurement_name}_{time_range}.xlsx"
         
-        # Make a copy and convert to timezone for grouping
+        # df['_time'] is already naive Europe/Berlin local time at this point
         df_excel = df.copy()
-        df_excel = convert_to_timezone(df_excel, timezone, logger)
-        
-        # Remove timezone for Excel compatibility
-        df_excel['_time'] = df_excel['_time'].dt.tz_localize(None)
-        
+
         wb = Workbook()
         wb.remove(wb.active)
         
@@ -398,10 +394,9 @@ def generate_csv_output(df, measurement_name, unit, timezone, logger=None):
         if logger:
             logger.debug("Generating CSV output with period data")
         
-        # Make timezone-aware copy
+        # df['_time'] is already naive Europe/Berlin local time at this point
         df_csv = df.copy()
-        df_csv = convert_to_timezone(df_csv, timezone, logger)
-        
+
         # Add year and month columns
         df_csv["year"] = df_csv["_time"].dt.strftime("%Y")
         df_csv["month"] = df_csv["_time"].dt.strftime("%m")
@@ -449,10 +444,9 @@ def generate_json_output(df, measurement_name, unit, timezone, logger=None):
         if logger:
             logger.debug("Generating JSON output")
         
-        # Make timezone-aware copy
+        # df['_time'] is already naive Europe/Berlin local time at this point
         df_json = df.copy()
-        df_json = convert_to_timezone(df_json, timezone, logger)
-        
+
         output_data = {"consumption": []}
         
         # Group by year and month
@@ -497,10 +491,9 @@ def generate_xml_output(df, measurement_name, unit, timezone, logger=None):
         if logger:
             logger.debug("Generating XML output")
         
-        # Make timezone-aware copy
+        # df['_time'] is already naive Europe/Berlin local time at this point
         df_xml = df.copy()
-        df_xml = convert_to_timezone(df_xml, timezone, logger)
-        
+
         # Create root element
         root = ET.Element("consumption_data")
         
