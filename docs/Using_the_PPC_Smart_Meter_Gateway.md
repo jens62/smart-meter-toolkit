@@ -4,7 +4,10 @@ This chapter is written in German, as it is a topic that I feel is particularly 
 
 Dieses Kapitel wird in deutscher Sprache verfasst, da es sich um ein Thema handelt, das mir besonders relevant für den deutschen Kontext erscheint. Sollte eine englischsprachige Version benötigt werden, können die gängigen Übersetzungswerkzeuge hilfreich sein.
 
+---
 <!-- TOC -->
+
+---
 
 ##### Links zur Web-Site von PPC zum Smart Meter Gateway
 
@@ -14,7 +17,25 @@ Dieses Kapitel wird in deutscher Sprache verfasst, da es sich um ein Thema hande
     - [Für Privatpersonen](https://www.ppc-ag.de/de/produkte/support/)
       - [SMGW-Handbuch](https://www.ppc-ag.de/wp-content/uploads/2023/04/Handbuch-fuer-Verbraucher-v.4.15.pdf)
 
-## Einbindung ins Netzwerk
+## - [Using the PPC Smart Meter Gateway](#using-the-ppc-smart-meter-gateway)
+        - [Links zur Web-Site von PPC zum Smart Meter Gateway](#links-zur-web-site-von-ppc-zum-smart-meter-gateway)
+- [Using the PPC Smart Meter Gateway](#using-the-ppc-smart-meter-gateway)
+        - [Links zur Web-Site von PPC zum Smart Meter Gateway](#links-zur-web-site-von-ppc-zum-smart-meter-gateway)
+  - [- Using the PPC Smart Meter Gateway](#--using-the-ppc-smart-meter-gateway)
+    - [Verbindungstest](#verbindungstest)
+    - [DHCP oder andere IP-Adresse vom Messstellenbetreiber anfordern](#dhcp-oder-andere-ip-adresse-vom-messstellenbetreiber-anfordern)
+    - [Zugriff auf das Subnetz 192.168.1.0/24 und/oder die Gateway IP 192.168.1.200 aus einem anderen Subnetz](#zugriff-auf-das-subnetz-1921681024-undoder-die-gateway-ip-1921681200-aus-einem-anderen-subnetz)
+      - [Einsatz eines Raspberry Pi](#einsatz-eines-raspberry-pi)
+        - [Einbindung per WLAN ins Hausnetz](#einbindung-per-wlan-ins-hausnetz)
+        - [Vergabe einer festen IP *192.168.1.14* für das Subnetz des Smart Meter (192.168.1.0/24)](#vergabe-einer-festen-ip-192168114-für-das-subnetz-des-smart-meter-1921681024)
+      - [OpenWrt auf einer alten Fritz!Box 7490](#openwrt-auf-einer-alten-fritzbox-7490)
+      - [Einsatz eines Routers](#einsatz-eines-routers)
+  - [Abruf der Zählerstände](#abruf-der-zählerstände)
+    - [Manuelle Verfahren zum Abruf der Zählerstände](#manuelle-verfahren-zum-abruf-der-zählerstände)
+      - [Nutzung der Web-Anwendung](#nutzung-der-web-anwendung)
+      - [Nutzung der TRuDI Software](#nutzung-der-trudi-software)
+    - [Automatisierter Abruf der Zählerstände](#automatisierter-abruf-der-zählerstände)
+
 
 Als Router für das "Hausnetz" im Subnetz 192.168.0.0/24 verwende ich eine Fritz!Box mit der IP 192.168.0.1. Bisher sind alle Geräte in diesem Subnetz versammelt.
 
@@ -90,6 +111,9 @@ Ich habe vom Messstellenbetreiber - auch nach Anfrage - kein Zertifikat, sondern
 
 ### DHCP oder andere IP-Adresse vom Messstellenbetreiber anfordern
 Nach dem o.g. Zitat aus dem Handbuch kann man den Messtellenbetreiber fragen, ob er das Gateway entweder auf DHCP umstellen oder eine andere IP-Adresse zuweisen kann.
+
+Ich habe dazu von Herrn [Thomas Müller](#contact) die folgende Information bekommen:
+>Grundsätzlich können die SMGWs an der HAN-Schnittstelle schon auch DHCP. Wie die Schnittstelle konfiguriert wird, liegt in den Händen des jeweiligen Versorgungsunternehmens – nachträglich wird das aber sicherlich keiner ändern. Man will sich da keine Problem durch das Kunden-Netzwerk einfangen und möglichst alles einheitlich halten.
 
 Sträubt sich der Messtellenbetreiber gegen diese Lösung (das war bei mir der Fall), gilt es den Zugriff mittels Netzwerkgymnastik zu realisieren.
 
@@ -334,6 +358,11 @@ Die **statische Route auf der Fritz!Box** nicht vergessen: Zielnetz: 192.168.1.0
 
 Die Lösung, die sich für mich am besten anfühlt, basiert auf dem Einsatz eines Routers.
 
+Nutzen:
+- Transparenter Zugriff zwischen allen Geräten der Subnetze 192.168.0.0/24 und 192.168.1.0/24 mit der Möglichkeit der feingranularen Justierung.
+- Zugriff auf das Internet über das bestehende Hausnetz (192.168.0.0/24) mit der Fritz!Box 192.168.0.1 als Router.
+- Keine Veränderung am bestehenden Hausnetz (192.168.0.0/24) bis auf die ergänzung einer statischen Route.
+
 Ich habe mich für einen [Mikrotik RB5009UPr+S+IN](https://help.mikrotik.com/docs/spaces/UM/pages/141197359/RB5009UPr+S+IN) entschieden.
 
 Hier meine Konfiguration
@@ -460,14 +489,48 @@ Das ist ja selbst für einen Laien selbsterklärend ;-). Für Netzwerk-[Honks](h
 
 
 
-## Keine schnittstelle
+## Abruf der Zählerstände vom SMGw
+### Manuelle Verfahren zum Abruf der Zählerstände
+#### Nutzung der Web-Anwendung
+Die Nutzung der Web-Anwendung ist im [Handbuch](https://www.ppc-ag.de/wp-content/uploads/2023/04/Handbuch-fuer-Verbraucher-v.4.15.pdf) gut beschrieben.
+#### Nutzung der TRuDI - Transparenz- und Display-Software
+
+Die TRuDI-Software und Dookumentation findet man bei der Physikalisch-Technischen Bundesanstalt: [Transparenz- und Displaysoftware TRuDI](https://www.ptb.de/cms/ptb/fachabteilungen/abt2/fb-23/ag-234/info-center-234/trudi.html). Das Handbuch gibt es jeweils beim link zur entsprechenden TRuDI-Version.
+
+Dort findet man auch den link zum TRuDI repository [trudi-public](https://bitbucket.org/dzgtrudi/trudi-public/src/master/) und einen hilfreichen Kontakt:
+
+>Thomas Müller
+IVU Softwareentwicklung GmbH
+tmueller@ivugmbh.de
+
+
+
+### Automatisierter Abruf der Zählerstände
+
+Für den automatisierten Abruf hat mir der o.g. 
+<a id="contact"></a>
+
+>Thomas Müller
+IVU Softwareentwicklung GmbH
+tmueller@ivugmbh.de
+
+auf die Sprünge geholfen. Er hat mir ausgesprochen hilfsbereit, schnell und umfassend auf meine Fragen geantwortet. Vielen Dank dafür!
+
+Herr Müller hat die bedauerliche Nachricht überbracht, dass das *SMGw* über keine REST-Schnittstelle verfügt:
 
 >Das SMGW von PPC hat leider keine REST-Schnittstelle – ein Umstand, den wir selbst seit Jahren beim Hersteller bemängeln. TRuDI holt sich die Daten aus den altbackenen HTML-Seiten des Gateways – echt kein Spaß.
-Grundsätzlich können die SMGWs an der HAN-Schnittstelle schon auch DHCP. Wie die Schnittstelle konfiguriert wird, liegt in den Händen des jeweiligen Versorgungsunternehmens – nachträglich wird das aber sicherlich keiner ändern. Man will sich da keine Problem durch das Kunden-Netzwerk einfangen und möglichst alles einheitlich halten.
- 
-Aber selbst, wenn Sie jetzt Zugangsdaten bekommen hätten: ohne einen konfigurierten TAF14 haben Sie maximal auf 15-Minuten-Werte Zugriff.
-TAF14 steht für „Tarifanwendungsfall zur hochfrequenten Bereitstellung von Messwerten für Mehrwertdienste“.
- 
-Meine private Lösung für mein Smart-Home sieht übrigens so aus: zwei Hutschienen-Zähler welche mittels RS485-zu-Ethernet-Modul jede Sekunde abgefragt werden. Warum extra Hutschienen-Zähler? Ich hatte zunächst auch auf die IR-Ablesekopf-Methode gesetzt: Allerdings sind bei meinen, vom Netzbetreiber gesetzten Zählern, nacheinander die IR-Sende-Dioden ausgefallen… da wird gern auch mal etwas gespart von den (chinesischen) Zähler-Herstellern.
 
+Ich wollte gerne kontinierlich, am liebsten bei jeder Änderungen, unseren Stromverbrauch aufzeichnen und damit die Möglichkeit haben, Energiefresser zu identifizieren.
+
+Herr Müller hat mir die Vorraussetzungen genannt:
+ 
+>ohne einen konfigurierten TAF14 haben Sie maximal auf 15-Minuten-Werte Zugriff.
+TAF14 steht für „Tarifanwendungsfall zur hochfrequenten Bereitstellung von Messwerten für Mehrwertdienste“.
+
+OK, also gebenich mich mit Werten vom SMGw alle 15 Minuten zufrieden und übe mich im Web Scraping.
+
+
+
+ 
+>Meine private Lösung für mein Smart-Home sieht übrigens so aus: zwei Hutschienen-Zähler welche mittels RS485-zu-Ethernet-Modul jede Sekunde abgefragt werden. Warum extra Hutschienen-Zähler? Ich hatte zunächst auch auf die IR-Ablesekopf-Methode gesetzt: Allerdings sind bei meinen, vom Netzbetreiber gesetzten Zählern, nacheinander die IR-Sende-Dioden ausgefallen… da wird gern auch mal etwas gespart von den (chinesischen) Zähler-Herstellern.
 
