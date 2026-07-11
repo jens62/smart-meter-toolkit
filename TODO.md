@@ -74,3 +74,41 @@ block is full of `comment=defconf` entries confirming it's a raw, unedited
 `/export` dump — exactly where RouterOS is likely to emit an ID instead of
 a name for a default/system-managed bridge. No action needed; doc is
 accurate as-is.
+
+## 5. Fix monthly consumption formula: it drops one reading interval per month boundary
+
+`meter_reading2consumption.py`'s `generate_excel_output()` writes each
+month's `Verbrauch` row as:
+
+```
+=MAX('2025_06'!B:B)-MIN('2025_06'!B:B)
+```
+
+i.e. last reading *within* the month minus first reading *within* the
+month. This never counts the reading interval between a month's last
+reading (e.g. 2025-06-30 23:45) and the next month's first reading
+(2025-07-01 00:00) — that ~15-minute (one reading interval, "eine
+Viertelstunde") chunk of consumption is dropped from *every* month's
+total, at every month boundary in the workbook.
+
+- [ ] Change the formula to chain consecutive months' starting readings:
+      `=MIN('2025_07'!B:B)-MIN('2025_06'!B:B)` for June's row (next
+      month's first reading minus this month's first reading), instead of
+      `MAX-MIN` within the same sheet
+- [ ] Handle the last month in the workbook: there's no "next month" sheet
+      to reference yet, so it can't use the chained formula — fall back to
+      the current `MAX-MIN` approximation for that one row, or mark it as
+      incomplete
+- [ ] Special case: the exact border reading (e.g. 2025-07-01 00:00) might
+      itself be missing due to a gap. In that case `MIN('2025_07'!B:B)`
+      would silently pick up the first reading *after* the gap instead of
+      the true boundary value, attributing part of July's gap-period
+      consumption to June and inflating June's total. Needs a check
+      (e.g. compare the next month's actual first-reading timestamp
+      against the expected start-of-month timestamp) that falls back to
+      `MAX('2025_06'!B:B)` for that boundary when the true border reading
+      isn't available — ideally cross-referenced with the gap tracking
+      from item 2 above
+- [ ] Check whether `generate_excel/add_gaps_to_verbrauch.py` or any other
+      script relies on the old per-month `MAX-MIN` formula/assumption and
+      needs updating too
