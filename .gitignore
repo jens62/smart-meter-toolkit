@@ -1,5 +1,20 @@
 # Mac stuff
 **/.DS_Store
+**/.AppleDouble
+**/.LSOverride
+**/._*
+**/.DocumentRevisions-V100
+**/.fseventsd
+**/.Spotlight-V100
+**/.TemporaryItems
+**/.Trashes
+**/.VolumeIcon.icns
+**/.com.apple.timemachine.donotpresent
+**/.AppleDB
+**/.AppleDesktop
+**/Network Trash Folder
+**/Temporary Items
+**/.apdisk
 
 # my chats with AI
 **_chat.md
@@ -180,3 +195,9 @@ cython_debug/
 
 # Local-only assets, never checked in
 /local-assets/
+
+# Microsoft Office lock files
+~$*.xlsx
+~$*.xls
+~$*.docx
+~$*.doc
