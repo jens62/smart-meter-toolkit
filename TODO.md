@@ -125,3 +125,26 @@ opt-in CLI flag instead of a second script/step.
       as a standalone script afterward (for adding gaps to an
       already-generated workbook without regenerating it) or retired once
       merged
+
+## 7. Add a "Summe" total row below the Verbrauch sheet, fix the next-month check
+
+Want a `Summe` row directly below the last month's row, summing the
+`Verbrauch` column. This breaks the boundary-chaining formulas from item 5:
+they detect "is there a next month" via `ISBLANK(A{next_row})`, which would
+be `FALSE` for the `Summe` row (its `A` cell isn't blank, it says "Summe"),
+so the last real month's `Grenzwert` formula would wrongly try to interpolate
+against a nonexistent "Summe" sheet.
+
+- [ ] Replace the `ISBLANK(A{next_row})` check with a real
+      sheet-existence check: `ISREF(INDIRECT("'"&A{next_row}&"'!A1"))` (the
+      `IS...` family of functions is error-tolerant, so this returns `FALSE`
+      instead of propagating `INDIRECT`'s `#REF!` when no such sheet exists)
+      — canonical English/comma form if writing via openpyxl, see item 5's
+      note. Test the bare check alone in a scratch cell first, given how many
+      formula surprises this workbook has produced already.
+- [ ] Add the `Summe` row itself (label in column A, `=SUM(...)` over the
+      `Verbrauch` column) once the check above no longer breaks on it
+- [ ] Double check `generate_excel/add_gaps_to_verbrauch.py`'s gap rows
+      (written below the last month row too) don't run into the same
+      "next row isn't a real month" problem, and that a `Summe` row and the
+      gaps block don't end up fighting over the same row
