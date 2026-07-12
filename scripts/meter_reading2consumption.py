@@ -262,19 +262,25 @@ def set_dynamic_column_widths(ws, df, is_consumption=False):
     if is_consumption:
         # Verbrauch sheet columns
         header_lengths = {
-            'A': len("Monat"),
-            'B': len(ws['B1'].value)  # "Verbrauch [kWh]"
+            col: len(ws[f'{col}1'].value)
+            for col in ('A', 'B', 'C', 'D', 'E', 'F', 'G')
         }
         content_lengths = {
             'A': max(len(str(v.value)) for v in ws['A']),
-            'B': max(len(f"{v.value:,.4f}") if isinstance(v.value, (int, float)) else len(str(v.value)) 
+            'B': max(len(f"{v.value:,.4f}") if isinstance(v.value, (int, float)) else len(str(v.value))
                    for v in ws['B'])
         }
-        
+
         # Use whichever is longer - header or content
         ws.column_dimensions['A'].width = min(max(header_lengths['A'], content_lengths['A']) + 2, 15)
         ws.column_dimensions['B'].width = min(max(header_lengths['B'], content_lengths['B']) + 2, 20)
-        
+
+        # C-G hold formulas; their computed values aren't known until Excel opens
+        # the file, so size them from the header text plus headroom for the
+        # eventual date/time or number display.
+        for col, min_width in (('C', 20), ('D', 15), ('E', 20), ('F', 15), ('G', 15)):
+            ws.column_dimensions[col].width = min(max(header_lengths[col], min_width) + 2, 35)
+
     else:
         # Monthly sheet columns
         headers = ["Zeit der Messung", f"Zählerstand [kWh]", "Zähleridentifikation"]
@@ -328,13 +334,24 @@ def generate_excel_output(df, output_dir, measurement_name, unit, timezone, logg
         
         # ===== VERBRAUCH SHEET =====
         ws_consumption = wb.create_sheet(title="Verbrauch")
-        ws_consumption.append(["Monat", f"Verbrauch [{unit}]"])
-        
+        ws_consumption.append([
+            "Monat",
+            f"Verbrauch [{unit}]",
+            "Letzte Messung [Zeit]",
+            f"Letzte Messung [{unit}]",
+            "Erste Messung Folgemonat [Zeit]",
+            f"Erste Messung Folgemonat [{unit}]",
+            f"Grenzwert Monatsende [{unit}]",
+        ])
+
         # Apply header style
         for cell in ws_consumption[1]:
             for attr, value in header_style.items():
                 setattr(cell, attr, value)
-        
+
+        number_format = '#,##0.0000;[Red]-#,##0.0000'
+        datetime_format = 'dd.mm.yyyy hh:mm:ss'
+
         # ===== MONTHLY SHEETS =====
         df_excel["_year_month"] = df_excel["_time"].dt.strftime("%Y_%m")
         for year_month, month_df in df_excel.groupby("_year_month"):
@@ -364,14 +381,68 @@ def generate_excel_output(df, output_dir, measurement_name, unit, timezone, logg
             # Set dynamic column widths
             set_dynamic_column_widths(ws, month_df)
             
-            # Add consumption formula (now with explicit number formatting)
-            formula = f"=MAX('{year_month}'!B:B)-MIN('{year_month}'!B:B)"
-            ws_consumption.append([year_month, formula])
-            
-            # Get the newly added formula cell and apply format
-            last_row = ws_consumption.max_row
-            formula_cell = ws_consumption.cell(row=last_row, column=2)
-            formula_cell.number_format = '#,##0.0000;[Red]-#,##0.0000'  # German format
+            # Add consumption row. Rather than a naive MAX-MIN per month (which
+            # drops the reading interval between two months' sheets, and would
+            # be wrong anyway if the meter's value isn't strictly monotonic,
+            # e.g. with feed-in/production), this chains each month's boundary
+            # value to the next: the value is looked up at the exact moment of
+            # the month boundary, linearly interpolated between this month's
+            # last reading and next month's first reading if they don't land
+            # exactly on the boundary. process_dataframe() sorts newest-first,
+            # so a month's own latest reading is its first data row (row 2)
+            # and its own oldest reading is its last data row.
+            row_num = ws_consumption.max_row + 1
+            next_row = row_num + 1
+
+            # NOTE: openpyxl writes formula text straight into the workbook's
+            # XML, which always uses the canonical English function names and
+            # comma argument separators, regardless of the user's Excel
+            # locale. Excel translates this to the display locale (e.g.
+            # WENN/ISTLEER + semicolons in German Excel) automatically when
+            # the file is opened - writing localized names/separators here
+            # instead produces a file Excel flags as corrupted.
+            letzte_zeit = (
+                f"""=DATEVALUE(INDIRECT("'"&A{row_num}&"'!A2"))"""
+                f"""+TIMEVALUE(INDIRECT("'"&A{row_num}&"'!A2"))"""
+            )
+            letzter_wert = f"""=INDIRECT("'"&A{row_num}&"'!B2")"""
+            erste_zeit_folgemonat = (
+                f"""=IF(ISBLANK(A{next_row}),"","""
+                f"""DATEVALUE(INDEX(INDIRECT("'"&A{next_row}&"'!A:A"),COUNTA(INDIRECT("'"&A{next_row}&"'!A:A"))))"""
+                f"""+TIMEVALUE(INDEX(INDIRECT("'"&A{next_row}&"'!A:A"),COUNTA(INDIRECT("'"&A{next_row}&"'!A:A")))))"""
+            )
+            erster_wert_folgemonat = (
+                f"""=IF(ISBLANK(A{next_row}),"","""
+                f"""INDEX(INDIRECT("'"&A{next_row}&"'!B:B"),COUNTA(INDIRECT("'"&A{next_row}&"'!A:A"))))"""
+            )
+            grenzwert = (
+                f"""=IF(ISBLANK(A{next_row}),D{row_num},"""
+                f"""D{row_num}+(F{row_num}-D{row_num})*"""
+                f"""(DATE(VALUE(LEFT(A{next_row},4)),VALUE(RIGHT(A{next_row},2)),1)-C{row_num})"""
+                f"""/(E{row_num}-C{row_num}))"""
+            )
+            if row_num == 2:
+                # Oldest month has no predecessor: use its own earliest reading.
+                verbrauch = (
+                    f"""=G{row_num}-INDEX(INDIRECT("'"&A{row_num}&"'!B:B"),"""
+                    f"""COUNTA(INDIRECT("'"&A{row_num}&"'!A:A")))"""
+                )
+            else:
+                verbrauch = f"=G{row_num}-G{row_num - 1}"
+
+            ws_consumption.append([
+                year_month, verbrauch, letzte_zeit, letzter_wert,
+                erste_zeit_folgemonat, erster_wert_folgemonat, grenzwert,
+            ])
+
+            # Apply number formats to the newly added row's formula cells
+            # (openpyxl doesn't evaluate formulas, so this can't rely on the
+            # isinstance-based apply_german_number_format() helper)
+            for col, fmt in (
+                (2, number_format), (3, datetime_format), (4, number_format),
+                (5, datetime_format), (6, number_format), (7, number_format),
+            ):
+                ws_consumption.cell(row=row_num, column=col).number_format = fmt
         
         # ===== FINALIZE VERBRAUCH SHEET =====
         # Apply formatting to consumption sheet
