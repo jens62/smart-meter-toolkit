@@ -102,3 +102,26 @@ canonical English function names and comma separators (`IF`, `ISBLANK`,
 names/semicolons a German-locale user would type directly into a cell —
 Excel translates for display automatically, but a file written with the
 localized form gets flagged as corrupted.
+
+## 6. Merge add_gaps_to_verbrauch.py into meter_reading2consumption.py
+
+Currently a separate post-processing step: generate the workbook with
+`meter_reading2consumption.py`, then run `generate_excel/add_gaps_to_verbrauch.py`
+against it to add the "Lücken" block. Fold the latter into the former as an
+opt-in CLI flag instead of a second script/step.
+
+- [ ] Add a CLI arg to `meter_reading2consumption.py` (e.g. `--add-gaps`) that
+      triggers writing the "Lücken" block into the `Verbrauch` sheet during
+      the same run that generates it
+- [ ] Reuse `generate_excel/add_gaps_to_verbrauch.py`'s existing gap-detection
+      logic (which itself already reuses `generate_excel/gap_detector.py`)
+      rather than duplicating it — likely as an importable function rather
+      than shelling out to a separate script
+- [ ] Keep the column layout in sync: the gaps block currently defaults to
+      starting at column I (see item 5) to avoid the Verbrauch sheet's A-G
+      columns — make sure a merged implementation still places it correctly
+      relative to whatever columns `meter_reading2consumption.py` writes
+- [ ] Decide whether `generate_excel/add_gaps_to_verbrauch.py` should be kept
+      as a standalone script afterward (for adding gaps to an
+      already-generated workbook without regenerating it) or retired once
+      merged
