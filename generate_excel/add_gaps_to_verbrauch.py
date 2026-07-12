@@ -124,7 +124,7 @@ def main():
     parser.add_argument("--delta", default="20m", help="Minimum gap duration (e.g., 20m, 2h)")
     parser.add_argument("--timezone", default="Europe/Berlin", help="Timezone for displayed timestamps")
     parser.add_argument("--sheet", default="Verbrauch", help="Sheet to add the gaps block to")
-    parser.add_argument("--start-col", default="F", help="Left column letter for the gaps block")
+    parser.add_argument("--start-col", default="I", help="Left column letter for the gaps block")
     args = parser.parse_args()
 
     gaps = get_gaps(args.input, args.timestamp, args.delimiter, args.delta, args.timezone)

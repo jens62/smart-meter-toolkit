@@ -75,40 +75,30 @@ block is full of `comment=defconf` entries confirming it's a raw, unedited
 a name for a default/system-managed bridge. No action needed; doc is
 accurate as-is.
 
-## 5. Fix monthly consumption formula: it drops one reading interval per month boundary
+## 5. ~~Fix monthly consumption formula: it drops one reading interval per month boundary~~ (resolved 2026-07-12)
 
-`meter_reading2consumption.py`'s `generate_excel_output()` writes each
-month's `Verbrauch` row as:
+`meter_reading2consumption.py`'s `generate_excel_output()` used to write
+each month's `Verbrauch` row as `=MAX('2025_06'!B:B)-MIN('2025_06'!B:B)` —
+last reading *within* the month minus first reading *within* the month.
+This never counted the reading interval between a month's last reading and
+the next month's first reading, dropping it from every month's total.
 
-```
-=MAX('2025_06'!B:B)-MIN('2025_06'!B:B)
-```
+Fixed by adding five columns (C-G: this month's last reading, next month's
+first reading, and a resulting boundary value) that chain each month's
+boundary to the next, looked up by timestamp rather than inferred from the
+register's value (so it isn't wrong-in-the-presence-of-feed-in the way
+`MAX`/`MIN` would be), with linear interpolation when the next month's
+first reading doesn't land exactly on the boundary, and edge-case fallbacks
+for the oldest/newest month. All still pure Excel formulas, no Python-side
+computation.
 
-i.e. last reading *within* the month minus first reading *within* the
-month. This never counts the reading interval between a month's last
-reading (e.g. 2025-06-30 23:45) and the next month's first reading
-(2025-07-01 00:00) — that ~15-minute (one reading interval, "eine
-Viertelstunde") chunk of consumption is dropped from *every* month's
-total, at every month boundary in the workbook.
+Also fixed a real collision this surfaced: `generate_excel/add_gaps_to_verbrauch.py`
+defaulted to writing its "Lücken" block at columns F:H, which now overlaps
+the new columns above. Changed its `--start-col` default from `F` to `I`.
 
-- [ ] Change the formula to chain consecutive months' starting readings:
-      `=MIN('2025_07'!B:B)-MIN('2025_06'!B:B)` for June's row (next
-      month's first reading minus this month's first reading), instead of
-      `MAX-MIN` within the same sheet
-- [ ] Fall back to the current `MAX('2025_06'!B:B)` approximation for a
-      month's end boundary whenever the true next-month border reading
-      (e.g. 2025-07-01 00:00) isn't available to chain against — this
-      covers two distinct triggers with the same fix: (a) the last month
-      in the workbook, where no "next month" sheet exists yet at all, and
-      (b) an existing next-month sheet whose first reading is delayed by a
-      gap, where naively using `MIN('2025_07'!B:B)` would silently pick up
-      the first post-gap reading instead of the true boundary value and
-      inflate the current month's total with part of the next month's
-      gap-period consumption. Needs a check (e.g. compare the next month's
-      actual first-reading timestamp against the expected start-of-month
-      timestamp) to detect case (b) — ideally cross-referenced with the
-      gap tracking from item 2 above. Consider marking a row using this
-      fallback as approximate either way.
-- [ ] Check whether `generate_excel/add_gaps_to_verbrauch.py` or any other
-      script relies on the old per-month `MAX-MIN` formula/assumption and
-      needs updating too
+Note for future edits: formula text written via openpyxl must use the
+canonical English function names and comma separators (`IF`, `ISBLANK`,
+`INDIRECT`, `DATEVALUE`, `TIMEVALUE`, ...), never the German
+names/semicolons a German-locale user would type directly into a cell —
+Excel translates for display automatically, but a file written with the
+localized form gets flagged as corrupted.
