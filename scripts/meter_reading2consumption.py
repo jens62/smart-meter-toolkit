@@ -3,6 +3,9 @@
 import os
 import sys
 import re
+import glob
+import io
+import subprocess
 import logging
 import pandas as pd
 import argparse
@@ -11,9 +14,11 @@ import pytz
 import json
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, PatternFill, Font, Border, Side
 from openpyxl.utils import get_column_letter
+
+NORMALIZE_AWK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "normalize_meter_csv.awk")
 
 def setup_logging(log_level=logging.INFO):
     """Configure logging with custom formatter and specified log level."""
@@ -302,36 +307,144 @@ def set_dynamic_column_widths(ws, df, is_consumption=False):
         ws.column_dimensions['B'].width = min(max(header_lengths['B'], content_lengths['B']) + 2, 20)
         ws.column_dimensions['C'].width = min(max(header_lengths['C'], content_lengths['C']) + 2, 35)
 
+def build_header_style():
+    """Style dict shared by the initial-generation and append code paths."""
+    return {
+        'font': Font(bold=True, color="FFFFFF"),
+        'fill': PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid"),
+        'border': Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin'),
+        ),
+    }
+
+
+def build_month_sheet(wb, ws_consumption, year_month, month_df, unit, header_style, row_num=None):
+    """Create one monthly sheet and write its Verbrauch summary row.
+
+    Shared by generate_excel_output() (full regeneration) and
+    append_to_workbook() (adding newer months to an existing workbook), so
+    the sheet layout and the Verbrauch formulas stay identical either way.
+
+    row_num, if given, is the exact Verbrauch row to write into (used by
+    append_to_workbook() when inserting ahead of hand-added rows below the
+    last month, e.g. a "Summe" total row). Defaults to appending at the end.
+    """
+    number_format = '#,##0.0000;[Red]-#,##0.0000'
+    datetime_format = 'dd.mm.yyyy hh:mm:ss'
+
+    # Create worksheet with German headers
+    ws = wb.create_sheet(title=year_month)
+    ws.append(["Zeit der Messung", f"Zählerstand [{unit}]", "Zähleridentifikation"])
+
+    # Get column indices once
+    time_idx = month_df.columns.get_loc('_time')
+    value_idx = month_df.columns.get_loc('_value')
+    meas_idx = month_df.columns.get_loc('_measurement')
+
+    # Add data rows using column indices
+    for row in month_df.itertuples(index=False):
+        ws.append([
+            row[time_idx].strftime("%d.%m.%Y %H:%M:%S"),
+            row[value_idx],
+            row[meas_idx]
+        ])
+
+    # Apply German number formatting
+    apply_german_number_format(ws, value_col_idx=2)
+
+    # Apply zebra formatting with borders
+    apply_zebra_formatting(ws, header_style)
+
+    # Set dynamic column widths
+    set_dynamic_column_widths(ws, month_df)
+
+    # Add consumption row. Rather than a naive MAX-MIN per month (which
+    # drops the reading interval between two months' sheets, and would
+    # be wrong anyway if the meter's value isn't strictly monotonic,
+    # e.g. with feed-in/production), this chains each month's boundary
+    # value to the next: the value is looked up at the exact moment of
+    # the month boundary, linearly interpolated between this month's
+    # last reading and next month's first reading if they don't land
+    # exactly on the boundary. process_dataframe() sorts newest-first,
+    # so a month's own latest reading is its first data row (row 2)
+    # and its own oldest reading is its last data row.
+    if row_num is None:
+        row_num = ws_consumption.max_row + 1
+    next_row = row_num + 1
+
+    # NOTE: openpyxl writes formula text straight into the workbook's
+    # XML, which always uses the canonical English function names and
+    # comma argument separators, regardless of the user's Excel
+    # locale. Excel translates this to the display locale (e.g.
+    # WENN/ISTLEER + semicolons in German Excel) automatically when
+    # the file is opened - writing localized names/separators here
+    # instead produces a file Excel flags as corrupted.
+    letzte_zeit = (
+        f"""=DATEVALUE(INDIRECT("'"&A{row_num}&"'!A2"))"""
+        f"""+TIMEVALUE(INDIRECT("'"&A{row_num}&"'!A2"))"""
+    )
+    letzter_wert = f"""=INDIRECT("'"&A{row_num}&"'!B2")"""
+    erste_zeit_folgemonat = (
+        f"""=IF(ISBLANK(A{next_row}),"","""
+        f"""DATEVALUE(INDEX(INDIRECT("'"&A{next_row}&"'!A:A"),COUNTA(INDIRECT("'"&A{next_row}&"'!A:A"))))"""
+        f"""+TIMEVALUE(INDEX(INDIRECT("'"&A{next_row}&"'!A:A"),COUNTA(INDIRECT("'"&A{next_row}&"'!A:A")))))"""
+    )
+    erster_wert_folgemonat = (
+        f"""=IF(ISBLANK(A{next_row}),"","""
+        f"""INDEX(INDIRECT("'"&A{next_row}&"'!B:B"),COUNTA(INDIRECT("'"&A{next_row}&"'!A:A"))))"""
+    )
+    grenzwert = (
+        f"""=IF(ISBLANK(A{next_row}),D{row_num},"""
+        f"""D{row_num}+(F{row_num}-D{row_num})*"""
+        f"""(DATE(VALUE(LEFT(A{next_row},4)),VALUE(RIGHT(A{next_row},2)),1)-C{row_num})"""
+        f"""/(E{row_num}-C{row_num}))"""
+    )
+    if row_num == 2:
+        # Oldest month has no predecessor: use its own earliest reading.
+        verbrauch = (
+            f"""=G{row_num}-INDEX(INDIRECT("'"&A{row_num}&"'!B:B"),"""
+            f"""COUNTA(INDIRECT("'"&A{row_num}&"'!A:A")))"""
+        )
+    else:
+        verbrauch = f"=G{row_num}-G{row_num - 1}"
+
+    for col, value in enumerate(
+        (year_month, verbrauch, letzte_zeit, letzter_wert,
+         erste_zeit_folgemonat, erster_wert_folgemonat, grenzwert),
+        start=1,
+    ):
+        ws_consumption.cell(row=row_num, column=col, value=value)
+
+    # Apply number formats to the newly added row's formula cells
+    # (openpyxl doesn't evaluate formulas, so this can't rely on the
+    # isinstance-based apply_german_number_format() helper)
+    for col, fmt in (
+        (2, number_format), (3, datetime_format), (4, number_format),
+        (5, datetime_format), (6, number_format), (7, number_format),
+    ):
+        ws_consumption.cell(row=row_num, column=col).number_format = fmt
+
+
 def generate_excel_output(df, output_dir, measurement_name, unit, timezone, logger=None):
     """Generate Excel output with professional German formatting."""
     try:
         if logger:
             logger.info("Generating Excel output...")
-        
+
         time_range = f"from_{df['_time'].min().strftime('%Y-%m-%d_%H-%M-%S')}_to_{df['_time'].max().strftime('%Y-%m-%d_%H-%M-%S')}"
         output_filename = f"{measurement_name}_{time_range}.xlsx"
-        
+
         # df['_time'] is already naive Europe/Berlin local time at this point
         df_excel = df.copy()
 
         wb = Workbook()
         wb.remove(wb.active)
-        
-        # ===== STYLE DEFINITIONS =====
-        header_font = Font(bold=True, color="FFFFFF")
-        header_fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
-        thin_border = Border(
-            left=Side(style='thin'),
-            right=Side(style='thin'),
-            top=Side(style='thin'), 
-            bottom=Side(style='thin')
-        )
-        header_style = {
-            'font': header_font,
-            'fill': header_fill,
-            'border': thin_border
-        }
-        
+
+        header_style = build_header_style()
+
         # ===== VERBRAUCH SHEET =====
         ws_consumption = wb.create_sheet(title="Verbrauch")
         ws_consumption.append([
@@ -349,111 +462,19 @@ def generate_excel_output(df, output_dir, measurement_name, unit, timezone, logg
             for attr, value in header_style.items():
                 setattr(cell, attr, value)
 
-        number_format = '#,##0.0000;[Red]-#,##0.0000'
-        datetime_format = 'dd.mm.yyyy hh:mm:ss'
-
         # ===== MONTHLY SHEETS =====
         df_excel["_year_month"] = df_excel["_time"].dt.strftime("%Y_%m")
         for year_month, month_df in df_excel.groupby("_year_month"):
-            # Create worksheet with German headers
-            ws = wb.create_sheet(title=year_month)
-            ws.append(["Zeit der Messung", f"Zählerstand [{unit}]", "Zähleridentifikation"])
-            
-            # Get column indices once
-            time_idx = month_df.columns.get_loc('_time')
-            value_idx = month_df.columns.get_loc('_value')
-            meas_idx = month_df.columns.get_loc('_measurement')
-            
-            # Add data rows using column indices
-            for row in month_df.itertuples(index=False):
-                ws.append([
-                    row[time_idx].strftime("%d.%m.%Y %H:%M:%S"),
-                    row[value_idx],
-                    row[meas_idx]
-                ])
-            
-            # Apply German number formatting
-            apply_german_number_format(ws, value_col_idx=2)
-            
-            # Apply zebra formatting with borders
-            apply_zebra_formatting(ws, header_style)
-            
-            # Set dynamic column widths
-            set_dynamic_column_widths(ws, month_df)
-            
-            # Add consumption row. Rather than a naive MAX-MIN per month (which
-            # drops the reading interval between two months' sheets, and would
-            # be wrong anyway if the meter's value isn't strictly monotonic,
-            # e.g. with feed-in/production), this chains each month's boundary
-            # value to the next: the value is looked up at the exact moment of
-            # the month boundary, linearly interpolated between this month's
-            # last reading and next month's first reading if they don't land
-            # exactly on the boundary. process_dataframe() sorts newest-first,
-            # so a month's own latest reading is its first data row (row 2)
-            # and its own oldest reading is its last data row.
-            row_num = ws_consumption.max_row + 1
-            next_row = row_num + 1
+            build_month_sheet(wb, ws_consumption, year_month, month_df, unit, header_style)
 
-            # NOTE: openpyxl writes formula text straight into the workbook's
-            # XML, which always uses the canonical English function names and
-            # comma argument separators, regardless of the user's Excel
-            # locale. Excel translates this to the display locale (e.g.
-            # WENN/ISTLEER + semicolons in German Excel) automatically when
-            # the file is opened - writing localized names/separators here
-            # instead produces a file Excel flags as corrupted.
-            letzte_zeit = (
-                f"""=DATEVALUE(INDIRECT("'"&A{row_num}&"'!A2"))"""
-                f"""+TIMEVALUE(INDIRECT("'"&A{row_num}&"'!A2"))"""
-            )
-            letzter_wert = f"""=INDIRECT("'"&A{row_num}&"'!B2")"""
-            erste_zeit_folgemonat = (
-                f"""=IF(ISBLANK(A{next_row}),"","""
-                f"""DATEVALUE(INDEX(INDIRECT("'"&A{next_row}&"'!A:A"),COUNTA(INDIRECT("'"&A{next_row}&"'!A:A"))))"""
-                f"""+TIMEVALUE(INDEX(INDIRECT("'"&A{next_row}&"'!A:A"),COUNTA(INDIRECT("'"&A{next_row}&"'!A:A")))))"""
-            )
-            erster_wert_folgemonat = (
-                f"""=IF(ISBLANK(A{next_row}),"","""
-                f"""INDEX(INDIRECT("'"&A{next_row}&"'!B:B"),COUNTA(INDIRECT("'"&A{next_row}&"'!A:A"))))"""
-            )
-            grenzwert = (
-                f"""=IF(ISBLANK(A{next_row}),D{row_num},"""
-                f"""D{row_num}+(F{row_num}-D{row_num})*"""
-                f"""(DATE(VALUE(LEFT(A{next_row},4)),VALUE(RIGHT(A{next_row},2)),1)-C{row_num})"""
-                f"""/(E{row_num}-C{row_num}))"""
-            )
-            if row_num == 2:
-                # Oldest month has no predecessor: use its own earliest reading.
-                verbrauch = (
-                    f"""=G{row_num}-INDEX(INDIRECT("'"&A{row_num}&"'!B:B"),"""
-                    f"""COUNTA(INDIRECT("'"&A{row_num}&"'!A:A")))"""
-                )
-            else:
-                verbrauch = f"=G{row_num}-G{row_num - 1}"
-
-            ws_consumption.append([
-                year_month, verbrauch, letzte_zeit, letzter_wert,
-                erste_zeit_folgemonat, erster_wert_folgemonat, grenzwert,
-            ])
-
-            # Apply number formats to the newly added row's formula cells
-            # (openpyxl doesn't evaluate formulas, so this can't rely on the
-            # isinstance-based apply_german_number_format() helper)
-            for col, fmt in (
-                (2, number_format), (3, datetime_format), (4, number_format),
-                (5, datetime_format), (6, number_format), (7, number_format),
-            ):
-                ws_consumption.cell(row=row_num, column=col).number_format = fmt
-        
         # ===== FINALIZE VERBRAUCH SHEET =====
-        # Apply formatting to consumption sheet
-        # apply_german_number_format(ws_consumption, value_col_idx=2)
         apply_zebra_formatting(ws_consumption, header_style)
         set_dynamic_column_widths(ws_consumption, df_excel, is_consumption=True)
-        
+
         # Save workbook
         wb.save(os.path.join(output_dir, output_filename))
         return output_filename
-        
+
     except Exception as e:
         if logger:
             logger.error(f"Error generating Excel output: {str(e)}")
@@ -685,6 +706,312 @@ def generate_xml_output_to_file(df, output_dir, measurement_name, unit, timezone
     
     return output_filename
 
+def detect_meter_id(csv_files, logger=None):
+    """Read the meter id from a raw export's .json/.xml sibling.
+
+    The per-window export CSVs (id;value;scaler;unit;status;capture_time)
+    don't carry the meter id themselves - it only lives once per export in
+    the sibling JSON/XML file's top-level "id" (JSON) / id attribute (XML).
+    """
+    for csv_file in csv_files:
+        base = os.path.splitext(csv_file)[0]
+        json_file = base + ".json"
+        xml_file = base + ".xml"
+        if os.path.isfile(json_file):
+            with open(json_file) as f:
+                data = json.load(f)
+            if data.get("id"):
+                return data["id"]
+        if os.path.isfile(xml_file):
+            root_id = ET.parse(xml_file).getroot().attrib.get("id")
+            if root_id:
+                return root_id
+    raise ValueError(
+        "Could not determine meter id from any .json/.xml sibling of the "
+        "export_*.csv files - pass --meter explicitly"
+    )
+
+
+def get_workbook_cutoff(xlsx_path, logger=None):
+    """Return (cutoff, last_sheet_name): the newest reading already in xlsx_path.
+
+    Monthly sheets are named YYYY_MM (sorts correctly as plain strings) and
+    store rows newest-first, so the last sheet's row 2 holds the newest
+    reading in the whole workbook.
+    """
+    wb = load_workbook(xlsx_path, read_only=True)
+    try:
+        month_sheets = sorted(s for s in wb.sheetnames if s != "Verbrauch")
+        if not month_sheets:
+            raise ValueError(f"No monthly sheets found in {xlsx_path}")
+        last_sheet = month_sheets[-1]
+        ws = wb[last_sheet]
+        first_data_row = next(ws.iter_rows(min_row=2, max_row=2, values_only=True), None)
+        if first_data_row is None:
+            raise ValueError(f"Sheet '{last_sheet}' in {xlsx_path} has no data rows")
+        cutoff = datetime.strptime(first_data_row[0], "%d.%m.%Y %H:%M:%S")
+        return cutoff, last_sheet
+    finally:
+        wb.close()
+
+
+def load_raw_export_folder(folder, meter, lo_iso, hi_iso, timezone, divisor, logger=None):
+    """Normalize a folder of raw export_*.csv files into a processed dataframe.
+
+    Shells out to normalize_meter_csv.awk (the same schema-detecting
+    normalizer the rest of the pipeline uses) restricted to [lo_iso, hi_iso),
+    then runs the result through the same process_dataframe()/
+    convert_to_timezone() steps load_and_process_data() uses for already
+    -normalized input.
+    """
+    csv_files = sorted(glob.glob(os.path.join(folder, "export_*.csv")))
+    if not csv_files:
+        raise ValueError(f"No export_*.csv files found in {folder}")
+
+    if meter is None:
+        meter = detect_meter_id(csv_files, logger)
+        if logger:
+            logger.info(f"Detected meter id from export siblings: {meter}")
+
+    result = subprocess.run(
+        ["awk", "-v", f"lo={lo_iso}", "-v", f"hi={hi_iso}", "-v", f"meter={meter}",
+         "-f", NORMALIZE_AWK, "--"] + csv_files,
+        capture_output=True, text=True, check=True,
+    )
+
+    normalized = "_time;_value;_measurement\n" + result.stdout
+    df = pd.read_csv(io.StringIO(normalized), delimiter=';', parse_dates=['_time'])
+    if df.empty:
+        return df
+
+    df = process_dataframe(df, keep_every=1, timezone=timezone, divisor=divisor, logger=logger)
+    df = convert_to_timezone(df, timezone, logger)
+    df['_time'] = df['_time'].dt.tz_localize(None)
+    return df
+
+
+MONTH_TAG_RE = re.compile(r'^\d{4}_\d{2}$')
+GAP_THRESHOLD = pd.Timedelta(minutes=20)
+
+
+def find_insertion_row_for_month(ws_consumption, year_month):
+    """Row where a new month's Verbrauch row belongs, keeping month rows in
+    chronological (YYYY_MM string) order ahead of any trailing hand-added
+    content (Summe, blanks, ...) - not just after whatever the last row is,
+    since a backfilled month can land earlier than months already present."""
+    insert_row = 2
+    for r in range(2, ws_consumption.max_row + 1):
+        cell_val = str(ws_consumption.cell(row=r, column=1).value or "")
+        if not MONTH_TAG_RE.match(cell_val):
+            break
+        if cell_val < year_month:
+            insert_row = r + 1
+        else:
+            break
+    return insert_row
+
+
+def find_gaps(sorted_desc_times, threshold=GAP_THRESHOLD):
+    """(gap_start, gap_end, duration) for each consecutive-reading gap over
+    `threshold`, given timestamps sorted newest-first."""
+    gaps = []
+    for newer, older in zip(sorted_desc_times, sorted_desc_times[1:]):
+        delta = newer - older
+        if delta > threshold:
+            gaps.append((older, newer, delta))
+    return gaps
+
+
+def read_month_rows(ws):
+    """(datetime, time_str, value, meas) tuples for a month sheet's data rows."""
+    rows = []
+    for time_str, value, meas in ws.iter_rows(min_row=2, values_only=True):
+        if time_str is None:
+            continue
+        rows.append((datetime.strptime(time_str, "%d.%m.%Y %H:%M:%S"), time_str, value, meas))
+    return rows
+
+
+def write_month_rows(ws, rows, header_style):
+    """Replace a month sheet's data rows (header kept) with `rows`, which
+    must already be sorted newest-first."""
+    if ws.max_row >= 2:
+        ws.delete_rows(2, amount=ws.max_row - 1)
+    for _, time_str, value, meas in rows:
+        ws.append([time_str, value, meas])
+    apply_german_number_format(ws, value_col_idx=2)
+    apply_zebra_formatting(ws, header_style)
+    width_df = pd.DataFrame(
+        [(r[0], r[2], r[3]) for r in rows], columns=['_time', '_value', '_measurement']
+    )
+    set_dynamic_column_widths(ws, width_df)
+
+
+def merge_month_sheet(ws, month_df, header_style):
+    """Merge newly-normalized rows into an existing month sheet.
+
+    Dedupes by exact timestamp (already-present readings are skipped),
+    re-sorts newest-first, and rewrites the sheet's data rows. Readings can
+    be older than, newer than, or interleaved with what's already there -
+    e.g. backfilling an archived day alongside topping up with today's live
+    export in the same run.
+    """
+    existing = read_month_rows(ws)
+    known_times = {r[1] for r in existing}
+    time_idx = month_df.columns.get_loc('_time')
+    value_idx = month_df.columns.get_loc('_value')
+    meas_idx = month_df.columns.get_loc('_measurement')
+
+    added = 0
+    for row in month_df.itertuples(index=False):
+        dt = row[time_idx]
+        time_str = dt.strftime("%d.%m.%Y %H:%M:%S")
+        if time_str in known_times:
+            continue
+        existing.append((dt, time_str, row[value_idx], row[meas_idx]))
+        known_times.add(time_str)
+        added += 1
+
+    existing.sort(key=lambda r: r[0], reverse=True)
+    if added:
+        write_month_rows(ws, existing, header_style)
+
+    gaps = find_gaps([r[0] for r in existing])
+    return added, gaps
+
+
+def find_last_month_row(ws_consumption):
+    """Row number of the last Monat row (column A == YYYY_MM), scanning from
+    the top rather than assuming it's the sheet's last row - real workbooks
+    in this pipeline have hand-added rows (a "Summe" total, blank spacer
+    rows, ad-hoc lookup blocks) below the last month."""
+    last = 1
+    for r in range(2, ws_consumption.max_row + 1):
+        if MONTH_TAG_RE.match(str(ws_consumption.cell(row=r, column=1).value or "")):
+            last = r
+    return last
+
+
+def extend_summe_formula(ws_consumption, old_last_row, new_last_row, logger=None):
+    """Bump a hand-added 'Summe' row's =SUM(B<start>:B<old_last_row>) total
+    to cover the newly-inserted month rows too. Only touches cells matching
+    that exact pattern - any other custom formula in/after the Summe row is
+    left untouched, since this workbook's Verbrauch sheet carries hand-added
+    columns/blocks this script has no business rewriting."""
+    pattern = re.compile(rf'^=SUM\((\$?[A-Z]+)(\d+):(\$?)B{old_last_row}\)$')
+    patched = 0
+    for row in ws_consumption.iter_rows():
+        for cell in row:
+            if cell.value == "Summe" and cell.column == 1:
+                for c in row:
+                    if isinstance(c.value, str):
+                        m = pattern.match(c.value)
+                        if m:
+                            c.value = f"=SUM({m.group(1)}{m.group(2)}:{m.group(3)}B{new_last_row})"
+                            patched += 1
+    if logger:
+        if patched:
+            logger.info(f"Extended {patched} 'Summe' SUM(...) formula(s) to include the new month row(s)")
+        else:
+            logger.warning(
+                "No 'Summe' B-column SUM(...) formula found to extend - if this workbook has a "
+                "hand-added total row, double check it still covers the new month row(s)"
+            )
+
+
+def append_to_workbook(df, xlsx_path, unit, logger=None):
+    """Merge readings into an already-generated workbook, in place.
+
+    This is a real merge, not an append: readings can be older than, newer
+    than, or interleaved with what a month's sheet already has (e.g.
+    backfilling an archived day alongside topping up with today's live
+    export in the same run) - existing months are merged and deduped by
+    exact timestamp via merge_month_sheet(). Brand-new months get a fresh
+    sheet plus a Verbrauch row inserted in chronological order (not blindly
+    at the sheet's end - there may be hand-added rows, e.g. a "Summe" total,
+    below the last month). Older months' formulas resolve the next month via
+    INDIRECT, so they self-correct once a new month exists.
+
+    Returns (added_rows, gaps): gaps is a list of
+    (year_month, gap_start, gap_end, duration) for every >20min gap
+    remaining in any month this call touched.
+    """
+    wb = load_workbook(xlsx_path)
+    header_style = build_header_style()
+    ws_consumption = wb["Verbrauch"]
+    existing_months = {s for s in wb.sheetnames if s != "Verbrauch"}
+
+    df = df.sort_values('_time', ascending=False).copy()
+    df["_year_month"] = df["_time"].dt.strftime("%Y_%m")
+
+    last_month_row_before = find_last_month_row(ws_consumption)
+    had_trailing_rows_before = last_month_row_before < ws_consumption.max_row
+    new_month_count = 0
+
+    added_rows = 0
+    all_gaps = []
+    for year_month, month_df in df.groupby("_year_month"):
+        if year_month in existing_months:
+            ws = wb[year_month]
+            added, gaps = merge_month_sheet(ws, month_df, header_style)
+            added_rows += added
+            all_gaps.extend((year_month, *g) for g in gaps)
+            if logger:
+                if added:
+                    logger.info(
+                        f"Merged {added} new row(s) into existing sheet "
+                        f"'{year_month}' (now {ws.max_row - 1} total)"
+                    )
+                else:
+                    logger.info(f"No new rows for existing sheet '{year_month}' (all already present)")
+        else:
+            insert_row = find_insertion_row_for_month(ws_consumption, year_month)
+            ws_consumption.insert_rows(insert_row, amount=1)
+            build_month_sheet(wb, ws_consumption, year_month, month_df, unit, header_style, row_num=insert_row)
+            existing_months.add(year_month)
+            new_month_count += 1
+            added_rows += len(month_df)
+            all_gaps.extend(
+                (year_month, *g) for g in find_gaps(sorted(month_df['_time'], reverse=True))
+            )
+            if logger:
+                logger.info(f"Created new sheet '{year_month}' with {len(month_df)} row(s)")
+
+    if new_month_count and had_trailing_rows_before:
+        last_month_row_after = find_last_month_row(ws_consumption)
+        extend_summe_formula(ws_consumption, last_month_row_before, last_month_row_after, logger)
+        trailing = ws_consumption.max_row - last_month_row_after
+        if trailing and logger:
+            logger.warning(
+                f"{trailing} row(s) below the last month (blank/Summe/other hand-added content) "
+                "were shifted - please manually verify any custom formulas there besides the "
+                "Summe total"
+            )
+
+    if added_rows:
+        apply_zebra_formatting(ws_consumption, header_style)
+        set_dynamic_column_widths(ws_consumption, df, is_consumption=True)
+        wb.save(xlsx_path)
+    wb.close()
+    return added_rows, all_gaps
+
+
+def rename_with_new_end(xlsx_path, new_end):
+    """Rename ..._to_<old-date>.xlsx to ..._to_<new_end>.xlsx, matching the
+    naming convention generate_excel_output() uses for a fresh workbook."""
+    dirname, base = os.path.split(xlsx_path)
+    new_base = re.sub(
+        r'_to_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.xlsx$',
+        f'_to_{new_end.strftime("%Y-%m-%d_%H-%M-%S")}.xlsx',
+        base,
+    )
+    if new_base == base:
+        return xlsx_path
+    new_path = os.path.join(dirname, new_base)
+    os.rename(xlsx_path, new_path)
+    return new_path
+
+
 def main():
     examples = f"""\
 Examples:
@@ -713,10 +1040,19 @@ Examples:
     
     # Input options
     input_group = parser.add_mutually_exclusive_group(required=True)
-    input_group.add_argument("--folder", help="Path to folder with CSV files")
+    input_group.add_argument("--folder", help="Path to folder with CSV files (with --append-to: the raw export_*.csv folder)")
     input_group.add_argument("--file", help="Path to single CSV file")
     input_group.add_argument("--stdin", action="store_true", help="Read from stdin")
-    
+
+    # Append mode: update an existing workbook instead of generating a new one
+    parser.add_argument("--append-to", metavar="XLSX",
+                       help="Existing workbook to update in place with readings newer than its "
+                            "latest sheet, instead of generating a new workbook. Requires --folder "
+                            "pointing at a directory of raw export_*.csv/.json/.xml files.")
+    parser.add_argument("--meter",
+                       help="Meter id to inject for raw exports (with --append-to). "
+                            "Default: auto-detected from the export files' .json/.xml siblings.")
+
     # Processing parameters
     parser.add_argument("--timezone", default="Europe/Berlin", help="Timezone for conversion")
     parser.add_argument("--delimiter", default=",", help="CSV delimiter character")
@@ -765,7 +1101,42 @@ Applies to all output formats""",
         parser.error("--keep-every must be >= 0")
     
     logger = setup_logging(getattr(logging, args.log_level))
-    
+
+    if args.append_to:
+        if not args.folder:
+            parser.error("--append-to requires --folder (the raw export_*.csv directory)")
+        try:
+            cutoff_before, last_sheet = get_workbook_cutoff(args.append_to, logger)
+            logger.info(f"Workbook's latest reading before this run is {cutoff_before} (sheet '{last_sheet}')")
+
+            df = load_raw_export_folder(
+                args.folder, args.meter, "0001-01-01T00:00:00Z", "9999-12-31T23:59:59Z",
+                args.timezone, args.divisor, logger
+            )
+            if df.empty:
+                logger.info("No data found in folder - workbook left unchanged.")
+                return
+
+            added_rows, gaps = append_to_workbook(df, args.append_to, args.unit, logger)
+            if added_rows == 0:
+                logger.info("All readings in the folder were already present - workbook left unchanged.")
+
+            if gaps:
+                logger.warning(f"{len(gaps)} gap(s) over 20 minutes remain in the merged month(s):")
+                for year_month, start, end, duration in sorted(gaps, key=lambda g: g[1]):
+                    logger.warning(f"  {year_month}: {start} -> {end} ({duration})")
+            else:
+                logger.info("No gaps over 20 minutes remain in the merged month(s).")
+
+            if added_rows:
+                cutoff_after, _ = get_workbook_cutoff(args.append_to, logger)
+                new_path = rename_with_new_end(args.append_to, cutoff_after)
+                logger.info(f"Merged {added_rows} new row(s); workbook is now {new_path}")
+        except Exception as e:
+            logger.error(f"Append failed: {str(e)}", exc_info=logger.level <= logging.DEBUG)
+            sys.exit(1)
+        return
+
     try:
         # Load data
         if args.stdin:

@@ -1,8 +1,9 @@
 BEGIN {
     FS = ";"
-    lo = "2025-03-31T22:00:00Z"
-    hi = "2026-06-30T22:00:00Z"
-    # meter can be overridden with: awk -v meter="..." -f normalize_meter_csv.awk
+    # lo, hi and meter can all be overridden with, e.g.:
+    #   awk -v lo="..." -v hi="..." -v meter="..." -f normalize_meter_csv.awk
+    if (lo == "") lo = "2025-03-31T22:00:00Z"
+    if (hi == "") hi = "2026-06-30T22:00:00Z"
     if (meter == "") meter = "01005e31803c.1emh0011802881.sm"
 }
 FNR == 1 {
