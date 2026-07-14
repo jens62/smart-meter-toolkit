@@ -18,8 +18,12 @@ on this project). That output currently isn't tied into the archiving
 pipeline (`scripts/daily-tar.sh`, `scripts/monthly-assemble.sh`) built for
 exactly this kind of file.
 
-- [ ] Decide where the raw export files should land relative to
-      `daily-tar.sh`'s `--data-dir`
+- [x] Decide where the raw export files should land relative to
+      `daily-tar.sh`'s `--data-dir` (resolved 2026-07-14: confirmed by
+      code and by direct observation while healing/verifying daily
+      tars this session - `readSMGW_multipleContracts.sh --path X`
+      writes into `${X}data/`, exactly `daily-tar.sh --base-dir X`'s
+      default `--data-dir`. Already aligned, nothing to reorganize.)
 - [x] Confirm `daily-tar.sh`'s `export_*.csv|json|xml` filename pattern
       actually matches what the reader produces (resolved 2026-07-14: it
       didn't - `readSMGW_multipleContracts.sh` also writes
@@ -28,7 +32,18 @@ exactly this kind of file.
       files were never archived at all. Added `-o -name 'export_*.cms'`
       to the `find` in `daily-tar.sh`.)
 - [ ] Wire the polling job, daily-tar.sh, and monthly-assemble.sh together
-      into one coherent pipeline instead of three independent pieces
+      into one coherent pipeline instead of independent pieces.
+      Partially addressed 2026-07-14: all jobs (now including
+      `gap_backfill.py`) share one config file
+      (`scripts/smgw-pipeline.env.example`) instead of repeating
+      credentials/paths, and are scheduled with awareness of each
+      other (`gap_backfill.py` deliberately before the merge job,
+      deliberately clear of the polling job's minutes - see
+      `scripts/crontab.example`'s comments). What's still true: these
+      are independently-scheduled cron entries, not one orchestrating
+      script - nothing actually checks that e.g. the merge job
+      succeeded before `daily-tar.sh` runs, they just happen to be
+      scheduled at compatible times.
 
 ## 2. ~~Nightly gap-filling script~~ (resolved 2026-07-14)
 
