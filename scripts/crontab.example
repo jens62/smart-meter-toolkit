@@ -29,8 +29,12 @@
 # every successful merge. Scheduling this before daily-tar.sh isn't
 # actually load-bearing - daily-tar.sh only copies files into
 # archives/daily, it never deletes originals from the data directory.
+# --add-gaps rescans every month sheet from scratch each run (not just the
+# ones this run touched) and rewrites the "Lücken" block, so a gap in an
+# older month gets removed if a later backfill closes it - e.g. finding a
+# missing May reading in July.
 50 1 * * * XLSX=$(ls -t /path/to/workbook-directory/<workbook-name-prefix>_from_*.xlsx | head -1) && /path/to/python3 /path/to/smart-meter-toolkit/scripts/meter_reading2consumption.py \
-  --append-to "$XLSX" --folder /path/to/data-directory --divisor 10000 \
+  --append-to "$XLSX" --folder /path/to/data-directory --divisor 10000 --add-gaps \
   >> /path/to/logs/append-excel.log 2>&1
 
 # Daily at 00:05: check whether append-excel.log is due for rotation, per

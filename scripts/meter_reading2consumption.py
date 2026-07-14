@@ -886,7 +886,7 @@ def get_workbook_cutoff(xlsx_path, logger=None):
         wb.close()
 
 
-def load_raw_export_folder(folder, meter, lo_iso, hi_iso, timezone, divisor, logger=None):
+def load_raw_export_folder(folder, meter, lo_iso, hi_iso, timezone, divisor, logger=None, newer_than_mtime=None):
     """Normalize a folder of raw export_*.csv files into a processed dataframe.
 
     Shells out to normalize_meter_csv.awk (the same schema-detecting
@@ -894,10 +894,26 @@ def load_raw_export_folder(folder, meter, lo_iso, hi_iso, timezone, divisor, log
     then runs the result through the same process_dataframe()/
     convert_to_timezone() steps load_and_process_data() uses for already
     -normalized input.
+
+    newer_than_mtime, if given, skips any file whose own mtime is no newer
+    than it - not a content-date filter. A file dropped in today covering
+    an old month (e.g. a backfilled May reading found in July) still has
+    today's mtime, so it's still picked up; a file already sitting there
+    unchanged since the last successful run is skipped, since merge dedup
+    guarantees it was already incorporated. Keeps re-runs from re-parsing
+    every file in an ever-growing raw-export folder every single night.
     """
     csv_files = sorted(glob.glob(os.path.join(folder, "export_*.csv")))
     if not csv_files:
         raise ValueError(f"No export_*.csv files found in {folder}")
+
+    if newer_than_mtime is not None:
+        before = len(csv_files)
+        csv_files = [f for f in csv_files if os.path.getmtime(f) > newer_than_mtime]
+        if logger:
+            logger.info(f"{len(csv_files)}/{before} export file(s) modified since the workbook's last save")
+        if not csv_files:
+            return pd.DataFrame(columns=['_time', '_value', '_measurement'])
 
     if meter is None:
         meter = detect_meter_id(csv_files, logger)
@@ -1113,7 +1129,47 @@ def extend_plausibilitaetstest_formula(ws_consumption, old_last_row, new_last_ro
             )
 
 
-def append_to_workbook(df, xlsx_path, unit, timezone='Europe/Berlin', logger=None):
+def collect_all_times(wb):
+    """All reading timestamps across every month sheet in the workbook.
+
+    Used for a from-scratch Luecken rescan: new data can retroactively
+    close (or reveal) a gap in a month this run's input didn't otherwise
+    touch (e.g. a backfilled May reading discovered in July), so refreshing
+    the block correctly means recomputing gaps over everything, not just
+    what changed this run.
+    """
+    times = []
+    for name in wb.sheetnames:
+        if name == "Verbrauch":
+            continue
+        for time_str, _value, _meas in wb[name].iter_rows(min_row=2, values_only=True):
+            if time_str is not None:
+                times.append(datetime.strptime(time_str, "%d.%m.%Y %H:%M:%S"))
+    return times
+
+
+def clear_gaps_block(ws_consumption, start_col='I'):
+    """Remove a previously-written Luecken block (values, merge, styling)
+    so add_gaps_block() can rewrite it from scratch - otherwise, if the
+    gap count shrank (a backfill closed one), stale rows past the new,
+    shorter list would be left behind."""
+    start_idx = column_index_from_string(start_col)
+    end_idx = start_idx + 2
+    for merged_range in list(ws_consumption.merged_cells.ranges):
+        if merged_range.min_row == 1 and merged_range.min_col == start_idx:
+            ws_consumption.unmerge_cells(str(merged_range))
+    for r in range(1, ws_consumption.max_row + 1):
+        for c in range(start_idx, end_idx + 1):
+            cell = ws_consumption.cell(row=r, column=c)
+            cell.value = None
+            cell.fill = PatternFill(fill_type=None)
+            cell.border = Border()
+            cell.font = Font()
+            cell.alignment = Alignment()
+            cell.number_format = 'General'
+
+
+def append_to_workbook(df, xlsx_path, unit, timezone='Europe/Berlin', logger=None, add_gaps=False):
     """Merge readings into an already-generated workbook, in place.
 
     This is a real merge, not an append: readings can be older than, newer
@@ -1190,6 +1246,11 @@ def append_to_workbook(df, xlsx_path, unit, timezone='Europe/Berlin', logger=Non
         # coloring - so it has to be reapplied every time this runs, not
         # just when a new month was just added.
         restyle_summe_row(ws_consumption, header_style)
+        if add_gaps:
+            all_times = collect_all_times(wb)
+            full_gaps = find_gaps(sorted(all_times, reverse=True), timezone=timezone)
+            clear_gaps_block(ws_consumption)
+            add_gaps_block(ws_consumption, full_gaps, logger=logger)
         set_dynamic_column_widths(ws_consumption, df, is_consumption=True)
         wb.save(xlsx_path)
     wb.close()
@@ -1273,9 +1334,11 @@ Examples:
                        choices=["none", "excel", "csv", "json", "xml"],
                        help="Output file formats")
     parser.add_argument("--add-gaps", action="store_true",
-                       help="Add a 'Lücken (keine Daten vom SMGW)' block to the Verbrauch sheet "
-                            "listing gaps over 20 minutes in the input data (excel output only; "
-                            "not available with --append-to)")
+                       help="Add/refresh a 'Lücken (keine Daten vom SMGW)' block in the Verbrauch "
+                            "sheet listing gaps over 20 minutes (excel output only). With "
+                            "--append-to, rescans every month sheet from scratch on each run - not "
+                            "just the ones this run touched - since new data can retroactively "
+                            "close a gap in an older month.")
     parser.add_argument("--stdout-format", default="none",
                        choices=["none", "json", "csv", "xml"],
                        help="Output format for stdout")
@@ -1312,16 +1375,19 @@ Applies to all output formats""",
         try:
             cutoff_before, last_sheet = get_workbook_cutoff(args.append_to, logger)
             logger.info(f"Workbook's latest reading before this run is {cutoff_before} (sheet '{last_sheet}')")
+            xlsx_mtime_before = os.path.getmtime(args.append_to)
 
             df = load_raw_export_folder(
                 args.folder, args.meter, "0001-01-01T00:00:00Z", "9999-12-31T23:59:59Z",
-                args.timezone, args.divisor, logger
+                args.timezone, args.divisor, logger, newer_than_mtime=xlsx_mtime_before
             )
             if df.empty:
                 logger.info("No data found in folder - workbook left unchanged.")
                 return
 
-            added_rows, gaps = append_to_workbook(df, args.append_to, args.unit, timezone=args.timezone, logger=logger)
+            added_rows, gaps = append_to_workbook(
+                df, args.append_to, args.unit, timezone=args.timezone, logger=logger, add_gaps=args.add_gaps
+            )
             if added_rows == 0:
                 logger.info("All readings in the folder were already present - workbook left unchanged.")
 
