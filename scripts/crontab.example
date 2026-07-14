@@ -1,41 +1,63 @@
 # Example crontab for the smart meter data pipeline (smgw2influx.sh,
-# daily-tar.sh, monthly-assemble.sh). Copy the lines you need into
-# `crontab -e`, then fill in the placeholders (<...>) for your setup.
+# gap_backfill.py, meter_reading2consumption.py, daily-tar.sh,
+# monthly-assemble.sh). Copy the lines you need into `crontab -e`.
 #
-# Secrets (gateway password, InfluxDB token) are intentionally kept out of
-# this file. Put them in a separate env file that is NOT committed to git
-# (chmod 600), e.g. ~/.config/smgw2influx.env:
-#
-#   export SMGW_PASSWORD='...'
-#   export INFLUXDB_TOKEN='...'
+# Shared config (gateway credentials, InfluxDB credentials, IP addresses,
+# filesystem layout) lives in one file instead of being repeated across
+# every line below - copy smgw-pipeline.env.example to e.g.
+# ~/.config/smgw-pipeline.env, fill in the values, then:
+#   chmod 600 ~/.config/smgw-pipeline.env
 #
 # cron does not source your shell profile, so each job below sources that
-# file itself before running the script.
+# file itself before running its script.
 
 # Every 14 minutes: pull the latest readings from the gateway and write them
 # to InfluxDB. 14 minutes (not 15) is intentional: it overlaps the meter's
 # own 15-minute reading interval so that a single missed run can't create a
 # gap in the data.
-*/14 * * * * . ~/.config/smgw2influx.env && /path/to/smart-meter-toolkit/scripts/smgw2influx.sh \
-  --user <gateway-user> --meter <meter-logical-name> \
-  --influx-url http://<influxdb-host>:8086 --influx-org <org> --influx-bucket <bucket> \
+*/14 * * * * . ~/.config/smgw-pipeline.env && /path/to/smart-meter-toolkit/scripts/smgw2influx.sh \
+  --user "$SMGW_USER" --meter "$SMGW_METER" --host "$SMGW_HOST" \
+  --influx-url "$INFLUXDB_URL" --influx-org "$INFLUXDB_ORG" --influx-bucket "$INFLUXDB_BUCKET" \
   --measurement <measurement-name> \
   > /dev/null 2>&1
 
-# Nightly at 01:50 (before daily-tar.sh below): merge newer/backfilled
-# readings from the data directory into the smart-meter Excel workbook
+# Nightly at 01:35 (before the merge job below): re-request any open gaps
+# from the last 15 months (matching this gateway's own measured retention -
+# see TODO.md item 8) directly from the gateway, in case a gap was caused
+# by e.g. this host being down rather than the meter/gateway itself failing
+# to capture a reading - the gateway would still have that data cached.
+# Scheduling this before the merge job *is* load-bearing here (unlike
+# daily-tar.sh's position below): anything this recovers gets picked up by
+# that same night's merge instead of waiting an extra day.
+#
+# The polling job above runs every 14 minutes around the clock (minutes
+# 0/14/28/42/56 of every hour), and this script makes its own sequential
+# gateway requests - deliberately scheduled to avoid overlapping that job,
+# since the gateway is slow (each request is a full digest-auth handshake).
+# Minute 35 is the furthest point from both neighboring polls (28 and 42 -
+# ~7 minutes either side); --max-requests-per-run 3 keeps the typical total
+# run time well under that margin. This is a schedule-only safeguard, not a
+# lock - there's deliberately no persistent check for whether smgw2influx.sh
+# is currently running.
+35 1 * * * . ~/.config/smgw-pipeline.env && XLSX=$(ls -t "$SMGW_WORKBOOK_DIR"/"$SMGW_WORKBOOK_PREFIX"_from_*.xlsx | head -1) && /path/to/python3 /path/to/smart-meter-toolkit/scripts/gap_backfill.py \
+  --workbook "$XLSX" --state-file "$SMGW_LOG_DIR"/gap-backfill-state.json \
+  --out-path "$SMGW_BASE_DIR" --host "$SMGW_HOST" --user "$SMGW_USER" --meter "$SMGW_METER" \
+  --max-requests-per-run 3 \
+  >> "$SMGW_LOG_DIR"/gap-backfill.log 2>&1
+
+# Nightly at 01:50 (after the gap-backfill job above, so anything it
+# recovers gets picked up the same night): merge newer/backfilled readings
+# from the data directory into the smart-meter Excel workbook
 # (meter_reading2consumption.py --append-to). The filename is resolved at
 # runtime since the script renames the workbook's _to_<date> suffix after
-# every successful merge. Scheduling this before daily-tar.sh isn't
-# actually load-bearing - daily-tar.sh only copies files into
-# archives/daily, it never deletes originals from the data directory.
+# every successful merge.
 # --add-gaps rescans every month sheet from scratch each run (not just the
 # ones this run touched) and rewrites the "Lücken" block, so a gap in an
 # older month gets removed if a later backfill closes it - e.g. finding a
 # missing May reading in July.
-50 1 * * * XLSX=$(ls -t /path/to/workbook-directory/<workbook-name-prefix>_from_*.xlsx | head -1) && /path/to/python3 /path/to/smart-meter-toolkit/scripts/meter_reading2consumption.py \
-  --append-to "$XLSX" --folder /path/to/data-directory --divisor 10000 --add-gaps \
-  >> /path/to/logs/append-excel.log 2>&1
+50 1 * * * . ~/.config/smgw-pipeline.env && XLSX=$(ls -t "$SMGW_WORKBOOK_DIR"/"$SMGW_WORKBOOK_PREFIX"_from_*.xlsx | head -1) && /path/to/python3 /path/to/smart-meter-toolkit/scripts/meter_reading2consumption.py \
+  --append-to "$XLSX" --folder "$SMGW_BASE_DIR" --divisor 10000 --add-gaps \
+  >> "$SMGW_LOG_DIR"/append-excel.log 2>&1
 
 # Daily at 00:05: check whether append-excel.log is due for rotation, per
 # logrotate-append-excel.conf.example (weekly, 8 rotations kept, gzip
@@ -51,9 +73,9 @@
 # skips any day whose archive exists, so redundantly re-checking the last
 # two weeks every night is cheap and correctly catches up on whatever a
 # multi-day outage would otherwise skip archiving forever.
-10 2 * * * /path/to/smart-meter-toolkit/scripts/daily-tar.sh "$(date -d '14 days ago' +%Y-%m-%d)" \
-  --base-dir /path/to/data-directory \
-  > /path/to/logs/daily-tar.log 2>&1
+10 2 * * * . ~/.config/smgw-pipeline.env && /path/to/smart-meter-toolkit/scripts/daily-tar.sh "$(date -d '14 days ago' +%Y-%m-%d)" \
+  --base-dir "$SMGW_BASE_DIR" \
+  > "$SMGW_LOG_DIR"/daily-tar.log 2>&1
 
 # Monthly on day 2 at 03:00: assemble last month's daily tars into one
 # compressed monthly archive (run on day 2 so the last day of the previous
@@ -61,8 +83,8 @@
 # also re-checks the two months before that, skipping any already
 # assembled - resilient to the host being down specifically on day 2 of a
 # given month, which would otherwise silently never assemble that month.
-0 3 2 * * /path/to/smart-meter-toolkit/scripts/monthly-assemble.sh \
-  --daily-dir /path/to/data-directory/archives/daily \
-  --monthly-dir /path/to/data-directory/archives/monthly \
+0 3 2 * * . ~/.config/smgw-pipeline.env && /path/to/smart-meter-toolkit/scripts/monthly-assemble.sh \
+  --daily-dir "$SMGW_BASE_DIR"/archives/daily \
+  --monthly-dir "$SMGW_BASE_DIR"/archives/monthly \
   --lookback-months 3 \
-  > /path/to/logs/monthly-assemble.log 2>&1
+  > "$SMGW_LOG_DIR"/monthly-assemble.log 2>&1

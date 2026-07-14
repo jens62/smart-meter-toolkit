@@ -205,17 +205,14 @@ scheduled run is simply missed because the box was down:
       isn't necessarily lost - **the SMGW itself caches roughly 15
       months of readings** (measured 2026-07-14 by binary-searching
       `readSMGW_multipleContractsInRanges.py --from <date> --to
-      <date>+30min` between a known-empty and known-present date until
-      it converged on the boundary: oldest reading found was
-      2025-04-12 03:30:01 local, i.e. ~458.8 days / ~660,700 minutes
-      before the measurement time - see
-      `local-assets/smgw_retention_probe/` for the full bisection log
-      and the raw response at that boundary. This is specific to this
-      household's gateway/firmware at this point in time, not a
-      documented spec value - re-measure if this matters again after a
-      firmware update or long enough after 2026-07-14 that the number
-      may have drifted), so a missed poll is recoverable by re-querying
-      the gateway for the gap window after the fact. Item 2's
+      <date>+30min` between a known-empty and known-present date; not a
+      documented spec value, specific to this household's gateway/
+      firmware at this point in time - exact measurement and raw
+      evidence are in `local-assets/smgw_retention_probe/`, not
+      repeated here since they're specific to this gateway. Re-measure
+      if this matters again much later or after a firmware update), so
+      a missed poll is recoverable by re-querying the gateway for the
+      gap window after the fact. Item 2's
       `scripts/gap_backfill.py` *is* this mechanism - it doesn't need to
       distinguish "downtime-caused" from "routine" gaps, a gap is a gap
       either way. Same status as item 2: implemented and manually tested

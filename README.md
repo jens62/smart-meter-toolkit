@@ -103,7 +103,27 @@ python3 meter_reading2consumption.py \
 - The meter id is auto-detected per file from its `.json`/`.xml` sibling; `--meter` overrides this if a folder has no siblings.
 - `--add-gaps` rescans every month sheet from scratch on each run (not just the months this run touched) and rewrites the `Lücken (keine Daten vom SMGW)` block, so a gap in an older month is removed once a later backfill closes it.
 
-See `scripts/crontab.example` for a full nightly-cron setup built around `--append-to`, including log rotation (`scripts/logrotate-append-excel.conf.example`) and raw-export archiving (below) - written to keep working correctly even after the cron host has been down for a while.
+See `scripts/crontab.example` for a full nightly-cron setup built around `--append-to`, including log rotation (`scripts/logrotate-append-excel.conf.example`), gateway gap recovery, and raw-export archiving (below) - written to keep working correctly even after the cron host has been down for a while. Shared config (gateway/InfluxDB credentials, IP addresses, filesystem layout) for all of these jobs lives in one file - copy `scripts/smgw-pipeline.env.example` to e.g. `~/.config/smgw-pipeline.env` and fill it in, rather than repeating the same values across every cron line.
+
+### Recovering gaps from the gateway (`gap_backfill.py`)
+
+The gateway itself caches readings well beyond its 15-minute polling interval - typically well over a year, though this varies by device (`TODO.md` item 8 has this project's own measured figure). That means a gap caused by e.g. the cron host being down, rather than the meter itself failing to capture a reading, is often still recoverable after the fact:
+
+```bash
+python3 scripts/gap_backfill.py \
+    --workbook workbook.xlsx \
+    --state-file gap-backfill-state.json \
+    --out-path /path/to/data-directory \
+    --user <user> --password <password> \
+    --dry-run
+```
+
+- Scans the workbook's last `--months` month-sheets (default 15) for gaps, using the same DST-aware gap detection as `--append-to`, then re-requests each one from the gateway via `read_SMGW.py`.
+- A gap is retried once per calendar day; after `--max-retries` (default 3) days of still being open, it's marked given-up and stops being retried, until the day it's no longer detected at all (then it's dropped from `--state-file` as resolved).
+- `--max-requests-per-run` caps gateway load per run - deferring the rest to a later run rather than dropping them.
+- `--dry-run` detects and reports without making any gateway requests or writing `--state-file` - use it to check what a run would do first.
+
+Wired into `scripts/crontab.example` scheduled specifically to avoid overlapping the gateway-polling job (see that file's comments for why the exact minute and `--max-requests-per-run` value matter).
 
 ### Archiving raw exports
 
@@ -112,7 +132,7 @@ Two scripts keep the raw `export_*.csv`/`.json`/`.xml`/`.cms` files from piling 
 - `scripts/daily-tar.sh` tars up a day's raw export files at a time; safe to re-run (skips any day already archived), and accepts a lookback window so a multi-day host outage doesn't leave days permanently unarchived.
 - `scripts/monthly-assemble.sh` concatenates a month's daily tars into one compressed monthly archive; likewise safe to re-run and supports a lookback window for the same reason.
 
-Both are wired into `scripts/crontab.example` alongside the `--append-to` job above.
+Both are wired into `scripts/crontab.example` alongside the jobs above.
 
 ## Additional scripts
 

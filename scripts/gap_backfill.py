@@ -12,7 +12,8 @@ README's "Filling gaps in already-exported data" section, run
 automatically instead of by hand.
 
 Only the last `--months` month-sheets of the workbook are scanned (default
-3), matching this script's purpose: recovering *recent, still-recoverable*
+15, matching the measured gateway retention above - see TODO.md item 8),
+matching this script's purpose: recovering *recent, still-recoverable*
 gaps while they're still in the gateway's own retention window. Older gaps
 remain visible forever in the `--add-gaps` "Luecken" block on the Verbrauch
 sheet - this script doesn't need to, and deliberately doesn't, cover those.
@@ -169,7 +170,9 @@ def main():
 """,
     )
     parser.add_argument("--workbook", required=True, help="Workbook to scan for gaps")
-    parser.add_argument("--months", type=int, default=3, help="How many trailing month-sheets to scan")
+    parser.add_argument("--months", type=int, default=15,
+                        help="How many trailing month-sheets to scan (default: 15, matching this "
+                             "gateway's measured retention window - see TODO.md item 8)")
     parser.add_argument("--delta", default="20m", help="Minimum gap duration to act on (e.g. 20m, 1h)")
     parser.add_argument("--timezone", default="Europe/Berlin", help="Timezone for gap detection")
 
