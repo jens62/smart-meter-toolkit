@@ -45,15 +45,24 @@
 # get reliable weekly rotation without root access.
 05 0 * * * /usr/sbin/logrotate --state /path/to/logs/logrotate-state /path/to/logrotate-append-excel.conf
 
-# Daily at 02:10: tar up yesterday's raw gateway export files.
-10 2 * * * /path/to/smart-meter-toolkit/scripts/daily-tar.sh \
+# Daily at 02:10: tar up yesterday's raw gateway export files. Passing a
+# 14-day lookback (instead of no args, which only archives yesterday)
+# makes this resilient to the host being down for a stretch: it already
+# skips any day whose archive exists, so redundantly re-checking the last
+# two weeks every night is cheap and correctly catches up on whatever a
+# multi-day outage would otherwise skip archiving forever.
+10 2 * * * /path/to/smart-meter-toolkit/scripts/daily-tar.sh "$(date -d '14 days ago' +%Y-%m-%d)" \
   --base-dir /path/to/data-directory \
   > /path/to/logs/daily-tar.log 2>&1
 
 # Monthly on day 2 at 03:00: assemble last month's daily tars into one
 # compressed monthly archive (run on day 2 so the last day of the previous
-# month has definitely been archived by the job above).
+# month has definitely been archived by the job above). --lookback-months 3
+# also re-checks the two months before that, skipping any already
+# assembled - resilient to the host being down specifically on day 2 of a
+# given month, which would otherwise silently never assemble that month.
 0 3 2 * * /path/to/smart-meter-toolkit/scripts/monthly-assemble.sh \
   --daily-dir /path/to/data-directory/archives/daily \
   --monthly-dir /path/to/data-directory/archives/monthly \
+  --lookback-months 3 \
   > /path/to/logs/monthly-assemble.log 2>&1
