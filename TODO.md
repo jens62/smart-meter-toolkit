@@ -167,7 +167,7 @@ coloring on every `append_to_workbook()` run (not just when a new month
 was added) - confirmed this had already happened to the real production
 file. Now re-applied after every zebra pass.
 
-## 8. Make the cron pipeline robust against `ubuntu24-studio` downtime
+## 8. ~~Make the cron pipeline robust against `ubuntu24-studio` downtime~~ (resolved 2026-07-14)
 
 The host has rebooted 3 times in the last ~8 days (per `last reboot`).
 Reviewed each cron job in `scripts/crontab.example` for what happens if a
@@ -180,22 +180,20 @@ scheduled run is simply missed because the box was down:
       catches up regardless of how long it was down. The file mtime broke
       on any copy/scp/touch unrelated to an actual merge (found while
       deploying the full-history workbook to this host).
-- [ ] `smgw2influx.sh` (every 14 min, gateway polling): a missed window
+- [x] `smgw2influx.sh` (every 14 min, gateway polling): a missed window
       isn't necessarily lost - **the SMGW itself caches roughly 15
-      months of readings** (measured 2026-07-14 by binary-searching
-      `readSMGW_multipleContractsInRanges.py --from <date> --to
-      <date>+30min` between a known-empty and known-present date; not a
-      documented spec value, specific to this household's gateway/
-      firmware at this point in time - exact measurement and raw
-      evidence are in `local-assets/smgw_retention_probe/`, not
-      repeated here since they're specific to this gateway. Re-measure
-      if this matters again much later or after a firmware update), so
-      a missed poll is recoverable by re-querying the gateway for the
-      gap window after the fact. Item 2's
-      `scripts/gap_backfill.py` *is* this mechanism - it doesn't need to
-      distinguish "downtime-caused" from "routine" gaps, a gap is a gap
-      either way. Same status as item 2: implemented and manually tested
-      2026-07-14, not yet scheduled in cron.
+      months of readings** (measured 2026-07-14; not a documented spec
+      value, specific to this household's gateway/firmware at this
+      point in time - exact measurement and raw evidence are in
+      `local-assets/smgw_retention_probe/`, not repeated here since
+      they're specific to this gateway. Re-measure if this matters again
+      much later or after a firmware update), so a missed poll is
+      recoverable by re-querying the gateway for the gap window after
+      the fact. Resolved via item 2's `scripts/gap_backfill.py` - it
+      doesn't need to distinguish "downtime-caused" from "routine" gaps,
+      a gap is a gap either way. Scheduled in `scripts/crontab.example`,
+      deployed to `ubuntu24-studio`, and verified end-to-end against the
+      real gateway and InfluxDB (see item 2).
 - [x] `daily-tar.sh` (02:10): resolved 2026-07-14. It already skipped a
       day whose archive exists, so the cron line now always passes a
       14-day lookback (`daily-tar.sh "$(date -d '14 days ago' +%Y-%m-%d)"`)
