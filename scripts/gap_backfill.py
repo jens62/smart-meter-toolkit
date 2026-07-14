@@ -36,18 +36,30 @@ smgw2influx.sh's underlying reader writes them, and the same place
 --append-to and daily-tar.sh already expect to find them. Picking up the
 recovered data into the workbook and its Luecken block still happens via
 the normal --append-to --add-gaps run, whenever that next runs.
+
+If --influx-url/--influx-org/--influx-bucket/--influx-measurement (and
+--influx-token or $INFLUXDB_TOKEN) are all given, a successfully-recovered
+gap's readings are also written to InfluxDB - the regular smgw2influx.sh
+polling job only ever writes "--past N minutes from now", so without this
+a gap recovered here would never appear in InfluxDB at all, only in the
+Excel pipeline. Uses the same line-protocol shape (line 77 of the legacy
+smgw2influx.sh on the deployment host: "<measurement>,item=<measurement>
+value=<v> <epoch_ns>") so recovered points land in the same series as
+everything else, not a separate one.
 """
 
 import argparse
+import glob
 import json
 import logging
 import os
 import subprocess
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import pytz
+import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from meter_reading2consumption import MONTH_TAG_RE, find_gaps, read_month_rows  # noqa: E402
@@ -123,6 +135,8 @@ def pad_local_time(naive_local_dt, minutes, timezone):
 
 
 def query_gateway(args, gap_start, gap_end, logger):
+    """Returns (ok, csv_path). csv_path is None if the request failed or
+    the expected output file wasn't found (e.g. a chunking edge case)."""
     from_str = pad_local_time(gap_start, -args.pad_minutes, args.timezone).strftime("%Y-%m-%d %H:%M:%S")
     to_str = pad_local_time(gap_end, args.pad_minutes, args.timezone).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -145,15 +159,75 @@ def query_gateway(args, gap_start, gap_end, logger):
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=args.request_timeout)
     except subprocess.TimeoutExpired:
         logger.warning(f"Gateway request timed out after {args.request_timeout}s")
-        return False
+        return False, None
 
     if result.returncode != 0:
         logger.warning(
             f"read_SMGW.py exited {result.returncode} for {from_str} .. {to_str}: "
             f"{result.stderr.strip()[-500:]}"
         )
-        return False
-    return True
+        return False, None
+
+    # read_SMGW.py names a live query's combined output
+    # "export_from_none-files_export_<from>---<to>.csv" (its generate_outputs()
+    # prefixes with "export_from_<input_format>-files_" whenever source_files
+    # is non-empty, which it always is for a live gateway query) - not the
+    # plain "export_<from>---<to>.csv" the per-chunk .cms/.xml files use.
+    # Glob on the escaped from/to substring rather than hardcoding that
+    # prefix, so this doesn't silently break if that naming changes.
+    escaped_from = from_str.replace(":", "_").replace(" ", "__")
+    escaped_to = to_str.replace(":", "_").replace(" ", "__")
+    pattern = os.path.join(args.out_path, "data", f"*{escaped_from}---{escaped_to}*.csv")
+    matches = glob.glob(pattern)
+    if not matches:
+        logger.warning(f"read_SMGW.py succeeded but no output CSV found matching {pattern}")
+        return True, None
+    return True, max(matches, key=os.path.getmtime)
+
+
+def influx_enabled(args):
+    return bool(args.influx_url and args.influx_org and args.influx_bucket
+                and args.influx_measurement and args.influx_token)
+
+
+def write_to_influx(csv_path, args, logger):
+    """Push a recovered gap's readings to InfluxDB, same line-protocol shape
+    as the legacy smgw2influx.sh, so they land in the same series instead of
+    a separate one. read_SMGW.py's CSV columns are:
+    logical_name;capture_time;long64_value;scaler;unit;status;signature -
+    note this differs from readSMGW_multipleContracts.sh's own CSV (used by
+    smgw2influx.sh), which has value in column 2, not long64_value in
+    column 3 - the column position matters here, not just the name."""
+    lines = []
+    with open(csv_path) as f:
+        header = f.readline()
+        if not header.startswith("logical_name;"):
+            logger.warning(f"Unexpected CSV header in {csv_path}, skipping InfluxDB write: {header.strip()}")
+            return 0
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            _logical_name, capture_time, long64_value, _scaler, _unit, _status, _signature = line.split(";")
+            epoch = int(datetime.strptime(capture_time, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp())
+            value = float(long64_value) / args.divisor
+            lines.append(f"{args.influx_measurement},item={args.influx_measurement} value={value:.4f} {epoch}000000000")
+
+    if not lines:
+        logger.info(f"No rows in {csv_path} to write to InfluxDB")
+        return 0
+
+    resp = requests.post(
+        f"{args.influx_url}/api/v2/write?org={args.influx_org}&bucket={args.influx_bucket}",
+        headers={"Authorization": f"Token {args.influx_token}"},
+        data="\n".join(lines),
+        timeout=30,
+    )
+    if resp.status_code // 100 != 2:
+        logger.warning(f"InfluxDB write failed ({resp.status_code}): {resp.text[:300]}")
+        return 0
+    logger.info(f"Wrote {len(lines)} row(s) to InfluxDB from {os.path.basename(csv_path)}")
+    return len(lines)
 
 
 def main():
@@ -200,6 +274,15 @@ def main():
                         help="Path to read_SMGW.py")
     parser.add_argument("--python", default=sys.executable, help="Python interpreter to run read_SMGW.py with")
 
+    parser.add_argument("--divisor", type=float, default=10000.0,
+                        help="Raw counter value -> InfluxDB unit, e.g. Wh -> kWh (default: 10000)")
+    parser.add_argument("--influx-url", help="InfluxDB base URL, e.g. http://host:8086 - omit to skip InfluxDB entirely")
+    parser.add_argument("--influx-org", help="InfluxDB org")
+    parser.add_argument("--influx-bucket", help="InfluxDB bucket")
+    parser.add_argument("--influx-measurement", help="InfluxDB measurement/item name, e.g. SMGW_EPPC0211923304")
+    parser.add_argument("--influx-token", default=os.environ.get("INFLUXDB_TOKEN"),
+                        help="InfluxDB API token (default: $INFLUXDB_TOKEN)")
+
     parser.add_argument("--dry-run", action="store_true",
                         help="Detect and report gaps/state changes without querying the gateway "
                              "or writing the state file")
@@ -212,6 +295,11 @@ def main():
     if not args.password:
         logger.error("No gateway password given (--password or $SMGW_PASSWORD)")
         sys.exit(1)
+
+    if influx_enabled(args):
+        logger.info(f"InfluxDB writes enabled: {args.influx_url} org={args.influx_org} bucket={args.influx_bucket} measurement={args.influx_measurement}")
+    else:
+        logger.info("InfluxDB writes disabled (not all of --influx-url/--influx-org/--influx-bucket/--influx-measurement/--influx-token given)")
 
     delta = pd.Timedelta(args.delta)
 
@@ -264,18 +352,20 @@ def main():
             + ", ".join(f"{s} .. {e}" for _k, s, e, _entry in deferred)
         )
 
-    queried, failed = 0, 0
+    queried, failed, influx_written = 0, 0, 0
     for key, start, end, entry in to_query:
         if args.dry_run:
             logger.info(f"[dry-run] would query gateway for gap {start} .. {end} (attempt {entry['attempts'] + 1}/{args.max_retries})")
             continue
-        ok = query_gateway(args, start, end, logger)
+        ok, csv_path = query_gateway(args, start, end, logger)
         entry["attempts"] += 1
         entry["last_attempt_date"] = today
         entry["last_result"] = "ok" if ok else "failed"
         queried += 1
         if not ok:
             failed += 1
+        elif csv_path and influx_enabled(args):
+            influx_written += write_to_influx(csv_path, args, logger)
 
     if not args.dry_run:
         save_state(args.state_file, state)
@@ -284,6 +374,7 @@ def main():
 
     logger.info(
         f"Done: {len(detected)} open gap(s), {queried} queried ({failed} failed), "
+        f"{influx_written} row(s) written to InfluxDB, "
         f"{len(deferred)} deferred, "
         f"{sum(1 for e in state.values() if e['status'] == 'given_up')} given up total"
     )

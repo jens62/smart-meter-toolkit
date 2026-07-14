@@ -30,37 +30,16 @@ exactly this kind of file.
 - [ ] Wire the polling job, daily-tar.sh, and monthly-assemble.sh together
       into one coherent pipeline instead of three independent pieces
 
-## 2. ~~Nightly gap-filling script~~ (implemented 2026-07-14, not yet scheduled)
+## 2. ~~Nightly gap-filling script~~ (resolved 2026-07-14)
 
-`scripts/gap_backfill.py`: scans a workbook's last `--months` (default 3)
-month-sheets using the same DST-aware `find_gaps()` as `--append-to`
-(deliberately *not* `generate_excel/gap_detector.py`'s naive-diff version,
-which would misreport DST transitions as gaps the same way
-`meter_reading2consumption.py` used to before that was fixed), then
-re-queries the gateway per gap via `read_SMGW.py --from ... --to ...`.
-
-- [x] Detects gaps in the last N months of data
-- [x] For each open gap, re-queries the gateway for that exact time window
-      (padded by `--pad-minutes`, default 30, either side)
-- [x] Retries a given gap once per calendar day (`--state-file` tracks
-      `last_attempt_date`, so re-running manually the same day is a no-op);
-      after `--max-retries` (default 3) attempts across separate days with
-      the gap still open, marks it `given_up` and stops querying it
-- [x] Persistent JSON state file (`--state-file`) surviving between runs;
-      a gap that disappears from detection is dropped from state as
-      resolved (or logged as "aged out of the window" if its end predates
-      the current N-month scan window - not the same thing, see the
-      script's docstring)
-- [x] `--max-requests-per-run` caps gateway load per run, deferring the
-      rest (oldest-gap-first) rather than silently dropping them
-- [x] `--dry-run` for safe manual testing (no gateway calls, no state
-      writes) - used to verify the retry/give-up/resolved/aged-out logic
-      against a copy of the real workbook before this was ever pointed at
-      the live gateway
-- [ ] Add this job to `scripts/crontab.example` - **deliberately not done
-      yet** (2026-07-14: implemented and manually tested per above, but
-      not wired into cron per explicit instruction, pending a manual test
-      run against the real gateway first)
+`scripts/gap_backfill.py` - detailed reference (flags, DST/retry/InfluxDB
+behavior, gotchas) is in
+[`docs/scripts-reference.md`](docs/scripts-reference.md), not duplicated
+here. Implemented, wired into `scripts/crontab.example`, deployed to
+`ubuntu24-studio`, and verified end-to-end against the real gateway and
+the real InfluxDB instance (a recovered gap's readings confirmed present
+via an independent Flux query-back, with the gap's own missing reading
+still correctly absent).
 
 ## 3. ~~Keep the Excel workbook up to date automatically~~ (resolved 2026-07-14)
 
