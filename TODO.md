@@ -30,25 +30,37 @@ exactly this kind of file.
 - [ ] Wire the polling job, daily-tar.sh, and monthly-assemble.sh together
       into one coherent pipeline instead of three independent pieces
 
-## 2. Nightly gap-filling script
+## 2. ~~Nightly gap-filling script~~ (implemented 2026-07-14, not yet scheduled)
 
-New script, run once per night via cron, that:
+`scripts/gap_backfill.py`: scans a workbook's last `--months` (default 3)
+month-sheets using the same DST-aware `find_gaps()` as `--append-to`
+(deliberately *not* `generate_excel/gap_detector.py`'s naive-diff version,
+which would misreport DST transitions as gaps the same way
+`meter_reading2consumption.py` used to before that was fixed), then
+re-queries the gateway per gap via `read_SMGW.py --from ... --to ...`.
 
-- [ ] Detects gaps in the last 3 months of data (reuse
-      `generate_excel/gap_detector.py`'s detection logic — the same one
-      `generate_excel/add_gaps_to_verbrauch.py` already calls out to —
-      rather than duplicating it)
-- [ ] For each open gap, re-queries the gateway for that exact time window
-      (same technique as the "Filling gaps in already-exported data" section
-      in the README: `read_SMGW.py --from ... --to ...`)
-- [ ] Retries a given gap once per night; if it's still unfilled after 3
-      consecutive nights, marks it as permanently lost so it stops being
-      retried
-- [ ] Needs a small persistent record of "known unrecoverable gaps" (e.g. a
-      JSON or CSV file checked in / kept alongside the data) that survives
-      between nightly runs, so a gap's retry count doesn't reset each night
-      and a gap already given up on isn't queried again
-- [ ] Add this job to `scripts/crontab.example`
+- [x] Detects gaps in the last N months of data
+- [x] For each open gap, re-queries the gateway for that exact time window
+      (padded by `--pad-minutes`, default 30, either side)
+- [x] Retries a given gap once per calendar day (`--state-file` tracks
+      `last_attempt_date`, so re-running manually the same day is a no-op);
+      after `--max-retries` (default 3) attempts across separate days with
+      the gap still open, marks it `given_up` and stops querying it
+- [x] Persistent JSON state file (`--state-file`) surviving between runs;
+      a gap that disappears from detection is dropped from state as
+      resolved (or logged as "aged out of the window" if its end predates
+      the current N-month scan window - not the same thing, see the
+      script's docstring)
+- [x] `--max-requests-per-run` caps gateway load per run, deferring the
+      rest (oldest-gap-first) rather than silently dropping them
+- [x] `--dry-run` for safe manual testing (no gateway calls, no state
+      writes) - used to verify the retry/give-up/resolved/aged-out logic
+      against a copy of the real workbook before this was ever pointed at
+      the live gateway
+- [ ] Add this job to `scripts/crontab.example` - **deliberately not done
+      yet** (2026-07-14: implemented and manually tested per above, but
+      not wired into cron per explicit instruction, pending a manual test
+      run against the real gateway first)
 
 ## 3. ~~Keep the Excel workbook up to date automatically~~ (resolved 2026-07-14)
 
@@ -190,13 +202,24 @@ scheduled run is simply missed because the box was down:
       on any copy/scp/touch unrelated to an actual merge (found while
       deploying the full-history workbook to this host).
 - [ ] `smgw2influx.sh` (every 14 min, gateway polling): a missed window
-      isn't necessarily lost - **the SMGW itself caches more than a
-      year of readings**, so a missed poll is recoverable by re-querying
-      the gateway for the gap window after the fact (`read_SMGW.py --from
-      ... --to ...`, same technique as item 2's nightly gap-filling
-      script). Extend/reuse item 2's mechanism to also cover
-      "detect+backfill after downtime," not just routine nightly gaps -
-      it's the same underlying operation either way.
+      isn't necessarily lost - **the SMGW itself caches roughly 15
+      months of readings** (measured 2026-07-14 by binary-searching
+      `readSMGW_multipleContractsInRanges.py --from <date> --to
+      <date>+30min` between a known-empty and known-present date until
+      it converged on the boundary: oldest reading found was
+      2025-04-12 03:30:01 local, i.e. ~458.8 days / ~660,700 minutes
+      before the measurement time - see
+      `local-assets/smgw_retention_probe/` for the full bisection log
+      and the raw response at that boundary. This is specific to this
+      household's gateway/firmware at this point in time, not a
+      documented spec value - re-measure if this matters again after a
+      firmware update or long enough after 2026-07-14 that the number
+      may have drifted), so a missed poll is recoverable by re-querying
+      the gateway for the gap window after the fact. Item 2's
+      `scripts/gap_backfill.py` *is* this mechanism - it doesn't need to
+      distinguish "downtime-caused" from "routine" gaps, a gap is a gap
+      either way. Same status as item 2: implemented and manually tested
+      2026-07-14, not yet scheduled in cron.
 - [x] `daily-tar.sh` (02:10): resolved 2026-07-14. It already skipped a
       day whose archive exists, so the cron line now always passes a
       14-day lookback (`daily-tar.sh "$(date -d '14 days ago' +%Y-%m-%d)"`)
