@@ -192,16 +192,23 @@ scheduled run is simply missed because the box was down:
       script). Extend/reuse item 2's mechanism to also cover
       "detect+backfill after downtime," not just routine nightly gaps -
       it's the same underlying operation either way.
-- [ ] `daily-tar.sh` (02:10): defaults to archiving only "yesterday"
-      relative to whenever it runs, so a multi-day outage silently skips
-      archiving those days forever unless someone manually re-runs it
-      with a `START_DATE`. Not data loss (it only copies into
-      `archives/daily`, never deletes originals from `data/`), but the
-      cron invocation itself doesn't self-heal. Consider having the cron
-      line always pass a fixed lookback window (e.g. 7-14 days) instead of
-      no args - `daily-tar.sh` already skips a day whose archive exists,
-      so this is safe to run redundantly every night.
-- [ ] `monthly-assemble.sh` (03:00, day 2): same pattern one level up -
-      defaults to "last month," so missing day 2 for a given month means
-      the next scheduled run (a month later) targets the wrong month and
-      silently never assembles the missed one.
+- [x] `daily-tar.sh` (02:10): resolved 2026-07-14. It already skipped a
+      day whose archive exists, so the cron line now always passes a
+      14-day lookback (`daily-tar.sh "$(date -d '14 days ago' +%Y-%m-%d)"`)
+      instead of no args (which only archived "yesterday" relative to
+      whenever it ran) - redundant re-checks of already-archived days are
+      cheap, and a multi-day outage now gets caught up automatically
+      instead of silently skipping those days forever. Also made
+      `--base-dir` explicit in the cron line while touching it - it was
+      relying on cron's default cwd unstated, which is `$HOME`, not this
+      script's directory. (While deploying this, found and replaced a
+      corrupted copy of the script on the host - two old versions had
+      somehow been concatenated into one file with duplicate shebangs;
+      backed up to `archives/superseded/` before overwriting.)
+- [x] `monthly-assemble.sh` (03:00, day 2): resolved 2026-07-14. Added a
+      "skip if this month's archive already exists" guard (it didn't have
+      one before, unlike `daily-tar.sh`) plus a `--lookback-months N`
+      option that also re-checks the N-1 months before the target,
+      skipping any already assembled. Cron line now passes
+      `--lookback-months 3`, so missing day 2 for a given month no longer
+      means that month is silently never assembled.
