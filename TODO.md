@@ -20,8 +20,13 @@ exactly this kind of file.
 
 - [ ] Decide where the raw export files should land relative to
       `daily-tar.sh`'s `--data-dir`
-- [ ] Confirm `daily-tar.sh`'s `export_*.csv|json|xml` filename pattern
-      actually matches what the reader produces
+- [x] Confirm `daily-tar.sh`'s `export_*.csv|json|xml` filename pattern
+      actually matches what the reader produces (resolved 2026-07-14: it
+      didn't - `readSMGW_multipleContracts.sh` also writes
+      `export_*.cms` (the raw signed original each `.xml`/`.csv`/`.json`
+      is derived from), which the pattern silently missed, so those
+      files were never archived at all. Added `-o -name 'export_*.cms'`
+      to the `find` in `daily-tar.sh`.)
 - [ ] Wire the polling job, daily-tar.sh, and monthly-assemble.sh together
       into one coherent pipeline instead of three independent pieces
 

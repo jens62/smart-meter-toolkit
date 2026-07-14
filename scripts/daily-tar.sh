@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Archives raw gateway export files (export_*.csv/json/xml) from a data
+# Archives raw gateway export files (export_*.csv/json/xml/cms) from a data
 # directory into one tar file per calendar day.
 #
 # Written for the Linux cron host this pipeline runs on (uses GNU `date -d`).
@@ -83,7 +83,7 @@ while [[ "$(date -d "$current" +%Y-%m-%d)" != "$(date -d "$END_DATE + 1 day" +%Y
 
   echo "Archiving day $day_label ..."
 
-  mapfile -t files < <(find "$DATA_DIR" -type f \( -name 'export_*.csv' -o -name 'export_*.json' -o -name 'export_*.xml' \) \
+  mapfile -t files < <(find "$DATA_DIR" -type f \( -name 'export_*.csv' -o -name 'export_*.json' -o -name 'export_*.xml' -o -name 'export_*.cms' \) \
     -newermt "${current} 00:00:00" ! -newermt "${next_day} 00:00:00" -print)
 
   if [[ ${#files[@]} -eq 0 ]]; then

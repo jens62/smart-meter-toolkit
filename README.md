@@ -107,7 +107,7 @@ See `scripts/crontab.example` for a full nightly-cron setup built around `--appe
 
 ### Archiving raw exports
 
-Two scripts keep the raw `export_*.csv`/`.json`/`.xml` files from piling up indefinitely, without ever deleting data that `--append-to` might still need:
+Two scripts keep the raw `export_*.csv`/`.json`/`.xml`/`.cms` files from piling up indefinitely, without ever deleting data that `--append-to` might still need:
 
 - `scripts/daily-tar.sh` tars up a day's raw export files at a time; safe to re-run (skips any day already archived), and accepts a lookback window so a multi-day host outage doesn't leave days permanently unarchived.
 - `scripts/monthly-assemble.sh` concatenates a month's daily tars into one compressed monthly archive; likewise safe to re-run and supports a lookback window for the same reason.
