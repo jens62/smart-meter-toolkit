@@ -170,3 +170,38 @@ sheet's used range, which was silently overwriting `Summe`'s header-style
 coloring on every `append_to_workbook()` run (not just when a new month
 was added) - confirmed this had already happened to the real production
 file. Now re-applied after every zebra pass.
+
+## 8. Make the cron pipeline robust against `ubuntu24-studio` downtime
+
+The host has rebooted 3 times in the last ~8 days (per `last reboot`).
+Reviewed each cron job in `scripts/crontab.example` for what happens if a
+scheduled run is simply missed because the box was down:
+
+- [x] Merge job (`meter_reading2consumption.py --append-to`): already fixed
+      (2026-07-14) - it now derives its "already covered" cutoff from the
+      workbook's own latest-reading content (`get_workbook_cutoff()`)
+      instead of the `.xlsx` file's filesystem mtime, so it correctly
+      catches up regardless of how long it was down. The file mtime broke
+      on any copy/scp/touch unrelated to an actual merge (found while
+      deploying the full-history workbook to this host).
+- [ ] `smgw2influx.sh` (every 14 min, gateway polling): a missed window
+      isn't necessarily lost - **the SMGW itself caches more than a
+      year of readings**, so a missed poll is recoverable by re-querying
+      the gateway for the gap window after the fact (`read_SMGW.py --from
+      ... --to ...`, same technique as item 2's nightly gap-filling
+      script). Extend/reuse item 2's mechanism to also cover
+      "detect+backfill after downtime," not just routine nightly gaps -
+      it's the same underlying operation either way.
+- [ ] `daily-tar.sh` (02:10): defaults to archiving only "yesterday"
+      relative to whenever it runs, so a multi-day outage silently skips
+      archiving those days forever unless someone manually re-runs it
+      with a `START_DATE`. Not data loss (it only copies into
+      `archives/daily`, never deletes originals from `data/`), but the
+      cron invocation itself doesn't self-heal. Consider having the cron
+      line always pass a fixed lookback window (e.g. 7-14 days) instead of
+      no args - `daily-tar.sh` already skips a day whose archive exists,
+      so this is safe to run redundantly every night.
+- [ ] `monthly-assemble.sh` (03:00, day 2): same pattern one level up -
+      defaults to "last month," so missing day 2 for a given month means
+      the next scheduled run (a month later) targets the wrong month and
+      silently never assembles the missed one.
