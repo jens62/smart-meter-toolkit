@@ -16,7 +16,9 @@ import xml.etree.ElementTree as ET
 from xml.dom import minidom
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, PatternFill, Font, Border, Side
-from openpyxl.utils import get_column_letter
+from openpyxl.utils import get_column_letter, column_index_from_string
+
+NUMBER_FORMAT = '#,##0.0000;[Red]-#,##0.0000'
 
 NORMALIZE_AWK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "normalize_meter_csv.awk")
 
@@ -332,7 +334,7 @@ def build_month_sheet(wb, ws_consumption, year_month, month_df, unit, header_sty
     append_to_workbook() when inserting ahead of hand-added rows below the
     last month, e.g. a "Summe" total row). Defaults to appending at the end.
     """
-    number_format = '#,##0.0000;[Red]-#,##0.0000'
+    number_format = NUMBER_FORMAT
     datetime_format = 'dd.mm.yyyy hh:mm:ss'
 
     # Create worksheet with German headers
@@ -428,7 +430,123 @@ def build_month_sheet(wb, ws_consumption, year_month, month_df, unit, header_sty
         ws_consumption.cell(row=row_num, column=col).number_format = fmt
 
 
-def generate_excel_output(df, output_dir, measurement_name, unit, timezone, logger=None):
+PLAUSIBILITAETSTEST_LABEL = "Plausibilitätstest: jüngster Wert - ältester Wert"
+
+
+def add_summe_and_plausibility_rows(ws_consumption, last_month_row, header_style):
+    """Append the fixed trailing block below the last month row: a blank
+    spacer row, a "Summe" total, and a "Plausibilitaetstest" cross-check.
+
+    The blank row is what keeps the last month's own ISBLANK(A{next_row})
+    "is there a next month" check working unchanged - it lands on the blank
+    row, not on "Summe", so no ISBLANK/ISREF rewrite is needed there.
+
+    The Plausibilitaetstest formula (newest overall reading minus oldest
+    overall reading) is a pure telescoping-sum identity: it must always
+    equal Summe exactly if the per-month boundary-chaining formulas
+    (generate_excel_output()'s "Verbrauch" column) are correct, making it a
+    built-in regression check on those formulas rather than a data check.
+    """
+    summe_row = last_month_row + 2
+    plausi_row = summe_row + 1
+
+    ws_consumption.cell(row=summe_row, column=1, value="Summe")
+    ws_consumption.cell(row=summe_row, column=2, value=f"=SUM(B2:B{last_month_row})")
+    for col in (1, 2):
+        cell = ws_consumption.cell(row=summe_row, column=col)
+        for attr, value in header_style.items():
+            setattr(cell, attr, value)
+    ws_consumption.cell(row=summe_row, column=2).number_format = NUMBER_FORMAT
+
+    ws_consumption.cell(row=plausi_row, column=1, value=PLAUSIBILITAETSTEST_LABEL)
+    ws_consumption.cell(row=plausi_row, column=2, value=(
+        f"""=INDIRECT("'"&A{last_month_row}&"'!B2")-"""
+        f"""INDEX(INDIRECT("'"&A2&"'!B:B"),COUNTA(INDIRECT("'"&A2&"'!A:A")))"""
+    ))
+    ws_consumption.cell(row=plausi_row, column=2).number_format = NUMBER_FORMAT
+
+
+def add_gaps_block(ws_consumption, gaps, start_col='I', logger=None):
+    """Write a "Luecken" Start/Ende/Dauer block into the Verbrauch sheet.
+
+    Folds generate_excel/add_gaps_to_verbrauch.py's layout directly into
+    the main generation path (its detection logic is find_gaps(), already
+    shared with append_to_workbook() rather than duplicated) instead of it
+    being a separate post-processing script/step.
+    """
+    if not gaps:
+        if logger:
+            logger.info("No gaps found - Luecken block left empty")
+        return
+
+    # find_gaps() walks its input newest-first, so its output comes out
+    # newest-gap-first too - re-sort oldest-first (ascending by start) for
+    # display, matching add_gaps_to_verbrauch.py's original ordering.
+    gaps = sorted(gaps, key=lambda g: g[0])
+
+    start_idx = column_index_from_string(start_col)
+    end_idx = start_idx + 1
+    duration_idx = start_idx + 2
+    start_letter = start_col
+    end_letter = get_column_letter(end_idx)
+    duration_letter = get_column_letter(duration_idx)
+
+    header_font = Font(bold=True, color="FFFFFFFF")
+    header_fill = PatternFill(start_color="FF4F81BD", end_color="FF4F81BD", fill_type="solid")
+    thin_border = Border(
+        left=Side(style="thin"), right=Side(style="thin"),
+        top=Side(style="thin"), bottom=Side(style="thin"),
+    )
+    light_fill = PatternFill(start_color="FFF0F0F0", end_color="FFF0F0F0", fill_type="solid")
+    dark_fill = PatternFill(start_color="FFD3D3D3", end_color="FFD3D3D3", fill_type="solid")
+    center = Alignment(horizontal="center")
+    date_fmt = "dd.mm.yyyy hh:mm:ss"
+    duration_fmt = "d hh:mm:ss"
+
+    ws_consumption.merge_cells(f"{start_letter}1:{duration_letter}1")
+    ws_consumption[f"{start_letter}1"] = "Lücken (keine Daten vom SMGW)"
+    for addr in (f"{start_letter}1", f"{end_letter}1", f"{duration_letter}1"):
+        ws_consumption[addr].font = header_font
+        ws_consumption[addr].fill = header_fill
+        ws_consumption[addr].alignment = center
+
+    ws_consumption.cell(row=2, column=start_idx, value="Start")
+    ws_consumption.cell(row=2, column=end_idx, value="Ende")
+    ws_consumption.cell(row=2, column=duration_idx, value="Dauer")
+    for col in (start_idx, end_idx, duration_idx):
+        cell = ws_consumption.cell(row=2, column=col)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.border = thin_border
+        cell.alignment = center
+
+    for i, (gap_start, gap_end, _duration) in enumerate(gaps, start=2):
+        row = i + 1
+        fill = light_fill if i % 2 == 0 else dark_fill
+        ws_consumption.cell(row=row, column=start_idx, value=gap_start)
+        ws_consumption.cell(row=row, column=end_idx, value=gap_end)
+        ws_consumption.cell(row=row, column=duration_idx, value=f"={end_letter}{row}-{start_letter}{row}")
+        for col in (start_idx, end_idx):
+            cell = ws_consumption.cell(row=row, column=col)
+            cell.number_format = date_fmt
+            cell.border = thin_border
+            cell.alignment = center
+            cell.fill = fill
+        duration_cell = ws_consumption.cell(row=row, column=duration_idx)
+        duration_cell.number_format = duration_fmt
+        duration_cell.border = thin_border
+        duration_cell.alignment = center
+        duration_cell.fill = fill
+
+    ws_consumption.column_dimensions[start_letter].width = 19
+    ws_consumption.column_dimensions[end_letter].width = 19
+    ws_consumption.column_dimensions[duration_letter].width = 14
+
+    if logger:
+        logger.info(f"Added {len(gaps)} gap(s) to the Luecken block")
+
+
+def generate_excel_output(df, output_dir, measurement_name, unit, timezone, logger=None, add_gaps=False):
     """Generate Excel output with professional German formatting."""
     try:
         if logger:
@@ -468,8 +586,21 @@ def generate_excel_output(df, output_dir, measurement_name, unit, timezone, logg
             build_month_sheet(wb, ws_consumption, year_month, month_df, unit, header_style)
 
         # ===== FINALIZE VERBRAUCH SHEET =====
+        # Runs before the Summe/Plausibilitaetstest/Luecken blocks below,
+        # since apply_zebra_formatting() blanket-restripes every row/column
+        # already in the sheet's used range - adding those blocks first
+        # would just get their own custom colors immediately overwritten.
         apply_zebra_formatting(ws_consumption, header_style)
         set_dynamic_column_widths(ws_consumption, df_excel, is_consumption=True)
+
+        # ===== SUMME / PLAUSIBILITAETSTEST =====
+        last_month_row = ws_consumption.max_row
+        add_summe_and_plausibility_rows(ws_consumption, last_month_row, header_style)
+
+        # ===== LUECKEN (optional) =====
+        if add_gaps:
+            gaps = find_gaps(sorted(df_excel['_time'].tolist(), reverse=True), timezone=timezone)
+            add_gaps_block(ws_consumption, gaps, logger=logger)
 
         # Save workbook
         wb.save(os.path.join(output_dir, output_filename))
@@ -626,7 +757,7 @@ def generate_xml_output(df, measurement_name, unit, timezone, logger=None):
             logger.error(f"Error generating XML: {str(e)}")
         raise
 
-def generate_output_files(df, output_dir, logger, measurement_name=None, unit="kWh", out_formats=None, timezone=None):
+def generate_output_files(df, output_dir, logger, measurement_name=None, unit="kWh", out_formats=None, timezone=None, add_gaps=False):
     """Generate output files in specified formats."""
     if out_formats is None:
         out_formats = ["excel"]
@@ -641,7 +772,7 @@ def generate_output_files(df, output_dir, logger, measurement_name=None, unit="k
     
     if "excel" in out_formats:
         try:
-            excel_file = generate_excel_output(df, output_dir, measurement_name, unit, timezone, logger)
+            excel_file = generate_excel_output(df, output_dir, measurement_name, unit, timezone, logger, add_gaps)
             output_files.append(excel_file)
             logger.info(f"Created Excel file: {excel_file}")
         except Exception as e:
@@ -811,14 +942,31 @@ def find_insertion_row_for_month(ws_consumption, year_month):
     return insert_row
 
 
-def find_gaps(sorted_desc_times, threshold=GAP_THRESHOLD):
+def find_gaps(sorted_desc_times, threshold=GAP_THRESHOLD, timezone='Europe/Berlin'):
     """(gap_start, gap_end, duration) for each consecutive-reading gap over
-    `threshold`, given timestamps sorted newest-first."""
+    `threshold`, given timestamps sorted newest-first.
+
+    A plain naive-datetime diff misreports every DST spring-forward
+    transition (e.g. 2025-03-30's clocks jumping 02:00->03:00 CEST) as a
+    ~75-minute gap, even though the underlying readings are exactly 15
+    minutes apart in real time. Re-localizing to `timezone`-aware and
+    diffing that fixes it - but only gets applied to pairs that already
+    exceed `threshold` under the naive diff: pytz can't tell which of a
+    DST fall-back's two ambiguous occurrences (e.g. 2025-10-26's repeated
+    02:00-02:59) a naive time belongs to, so blindly re-localizing every
+    pair around a fall-back can manufacture a gap that was never even a
+    candidate. Restricting the DST-aware recheck to already-over-threshold
+    naive diffs means it can only rule a candidate OUT, never invent one.
+    """
+    tz = pytz.timezone(timezone)
     gaps = []
     for newer, older in zip(sorted_desc_times, sorted_desc_times[1:]):
-        delta = newer - older
-        if delta > threshold:
-            gaps.append((older, newer, delta))
+        naive_delta = newer - older
+        if naive_delta <= threshold:
+            continue
+        real_delta = tz.localize(newer) - tz.localize(older)
+        if real_delta > threshold:
+            gaps.append((older, newer, real_delta))
     return gaps
 
 
@@ -847,7 +995,7 @@ def write_month_rows(ws, rows, header_style):
     set_dynamic_column_widths(ws, width_df)
 
 
-def merge_month_sheet(ws, month_df, header_style):
+def merge_month_sheet(ws, month_df, header_style, timezone='Europe/Berlin'):
     """Merge newly-normalized rows into an existing month sheet.
 
     Dedupes by exact timestamp (already-present readings are skipped),
@@ -876,7 +1024,7 @@ def merge_month_sheet(ws, month_df, header_style):
     if added:
         write_month_rows(ws, existing, header_style)
 
-    gaps = find_gaps([r[0] for r in existing])
+    gaps = find_gaps([r[0] for r in existing], timezone=timezone)
     return added, gaps
 
 
@@ -919,7 +1067,53 @@ def extend_summe_formula(ws_consumption, old_last_row, new_last_row, logger=None
             )
 
 
-def append_to_workbook(df, xlsx_path, unit, logger=None):
+def restyle_summe_row(ws_consumption, header_style):
+    """Re-apply header-style coloring to a "Summe" row's A/B cells.
+
+    apply_zebra_formatting() has no way to skip specific rows - it
+    unconditionally restripes every cell's fill/border in the sheet's used
+    range - so this must be called every time that runs, not just when a
+    new month was just inserted.
+    """
+    for row in ws_consumption.iter_rows():
+        for cell in row:
+            if cell.column == 1 and cell.value == "Summe":
+                for col in (1, 2):
+                    c = ws_consumption.cell(row=cell.row, column=col)
+                    for attr, value in header_style.items():
+                        setattr(c, attr, value)
+
+
+def extend_plausibilitaetstest_formula(ws_consumption, old_last_row, new_last_row, logger=None):
+    """Bump add_summe_and_plausibility_rows()'s Plausibilitaetstest row's
+    reference to the last month's own sheet (A{old_last_row}) so it still
+    points at the newest month after new rows are inserted above it."""
+    pattern = re.compile(
+        rf'^=INDIRECT\("\'"&A{old_last_row}&"\'!B2"\)-'
+        rf'INDEX\(INDIRECT\("\'"&A2&"\'!B:B"\),COUNTA\(INDIRECT\("\'"&A2&"\'!A:A"\)\)\)$'
+    )
+    patched = 0
+    for row in ws_consumption.iter_rows():
+        for cell in row:
+            if cell.value == PLAUSIBILITAETSTEST_LABEL and cell.column == 1:
+                for c in row:
+                    if isinstance(c.value, str) and pattern.match(c.value):
+                        c.value = (
+                            f"""=INDIRECT("'"&A{new_last_row}&"'!B2")-"""
+                            f"""INDEX(INDIRECT("'"&A2&"'!B:B"),COUNTA(INDIRECT("'"&A2&"'!A:A")))"""
+                        )
+                        patched += 1
+    if logger:
+        if patched:
+            logger.info("Extended the Plausibilitaetstest row's reference to the new last month")
+        else:
+            logger.warning(
+                "No Plausibilitaetstest row found to extend - if this workbook predates that "
+                "feature, this is expected"
+            )
+
+
+def append_to_workbook(df, xlsx_path, unit, timezone='Europe/Berlin', logger=None):
     """Merge readings into an already-generated workbook, in place.
 
     This is a real merge, not an append: readings can be older than, newer
@@ -953,7 +1147,7 @@ def append_to_workbook(df, xlsx_path, unit, logger=None):
     for year_month, month_df in df.groupby("_year_month"):
         if year_month in existing_months:
             ws = wb[year_month]
-            added, gaps = merge_month_sheet(ws, month_df, header_style)
+            added, gaps = merge_month_sheet(ws, month_df, header_style, timezone=timezone)
             added_rows += added
             all_gaps.extend((year_month, *g) for g in gaps)
             if logger:
@@ -972,7 +1166,7 @@ def append_to_workbook(df, xlsx_path, unit, logger=None):
             new_month_count += 1
             added_rows += len(month_df)
             all_gaps.extend(
-                (year_month, *g) for g in find_gaps(sorted(month_df['_time'], reverse=True))
+                (year_month, *g) for g in find_gaps(sorted(month_df['_time'], reverse=True), timezone=timezone)
             )
             if logger:
                 logger.info(f"Created new sheet '{year_month}' with {len(month_df)} row(s)")
@@ -980,16 +1174,22 @@ def append_to_workbook(df, xlsx_path, unit, logger=None):
     if new_month_count and had_trailing_rows_before:
         last_month_row_after = find_last_month_row(ws_consumption)
         extend_summe_formula(ws_consumption, last_month_row_before, last_month_row_after, logger)
+        extend_plausibilitaetstest_formula(ws_consumption, last_month_row_before, last_month_row_after, logger)
         trailing = ws_consumption.max_row - last_month_row_after
         if trailing and logger:
             logger.warning(
                 f"{trailing} row(s) below the last month (blank/Summe/other hand-added content) "
                 "were shifted - please manually verify any custom formulas there besides the "
-                "Summe total"
+                "Summe total and Plausibilitaetstest row"
             )
 
     if added_rows:
         apply_zebra_formatting(ws_consumption, header_style)
+        # apply_zebra_formatting() blanket-restripes every cell's fill in
+        # the sheet's used range - including "Summe"'s header-style A/B
+        # coloring - so it has to be reapplied every time this runs, not
+        # just when a new month was just added.
+        restyle_summe_row(ws_consumption, header_style)
         set_dynamic_column_widths(ws_consumption, df, is_consumption=True)
         wb.save(xlsx_path)
     wb.close()
@@ -1072,6 +1272,10 @@ Examples:
     parser.add_argument("--out-format", nargs="+", default=["excel"],
                        choices=["none", "excel", "csv", "json", "xml"],
                        help="Output file formats")
+    parser.add_argument("--add-gaps", action="store_true",
+                       help="Add a 'Lücken (keine Daten vom SMGW)' block to the Verbrauch sheet "
+                            "listing gaps over 20 minutes in the input data (excel output only; "
+                            "not available with --append-to)")
     parser.add_argument("--stdout-format", default="none",
                        choices=["none", "json", "csv", "xml"],
                        help="Output format for stdout")
@@ -1117,7 +1321,7 @@ Applies to all output formats""",
                 logger.info("No data found in folder - workbook left unchanged.")
                 return
 
-            added_rows, gaps = append_to_workbook(df, args.append_to, args.unit, logger)
+            added_rows, gaps = append_to_workbook(df, args.append_to, args.unit, timezone=args.timezone, logger=logger)
             if added_rows == 0:
                 logger.info("All readings in the folder were already present - workbook left unchanged.")
 
@@ -1187,7 +1391,7 @@ Applies to all output formats""",
         
         # Handle file outputs
         output_files = generate_output_files(
-            df, args.output, logger, None, args.unit, args.out_format, args.timezone
+            df, args.output, logger, None, args.unit, args.out_format, args.timezone, args.add_gaps
         )
         
         if not output_files and "none" not in args.out_format:
