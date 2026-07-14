@@ -120,48 +120,53 @@ names/semicolons a German-locale user would type directly into a cell —
 Excel translates for display automatically, but a file written with the
 localized form gets flagged as corrupted.
 
-## 6. Merge add_gaps_to_verbrauch.py into meter_reading2consumption.py
+## 6. ~~Merge add_gaps_to_verbrauch.py into meter_reading2consumption.py~~ (resolved 2026-07-14)
 
-Currently a separate post-processing step: generate the workbook with
-`meter_reading2consumption.py`, then run `generate_excel/add_gaps_to_verbrauch.py`
-against it to add the "Lücken" block. Fold the latter into the former as an
-opt-in CLI flag instead of a second script/step.
+Added `--add-gaps` to `meter_reading2consumption.py`: when passed, the same
+run that generates the workbook also writes the "Lücken (keine Daten vom
+SMGW)" block into the `Verbrauch` sheet (header text updated to match what
+was already in use on the real production file), instead of a separate
+`generate_excel/add_gaps_to_verbrauch.py` post-processing step.
 
-- [ ] Add a CLI arg to `meter_reading2consumption.py` (e.g. `--add-gaps`) that
-      triggers writing the "Lücken" block into the `Verbrauch` sheet during
-      the same run that generates it
-- [ ] Reuse `generate_excel/add_gaps_to_verbrauch.py`'s existing gap-detection
-      logic (which itself already reuses `generate_excel/gap_detector.py`)
-      rather than duplicating it — likely as an importable function rather
-      than shelling out to a separate script
-- [ ] Keep the column layout in sync: the gaps block currently defaults to
-      starting at column I (see item 5) to avoid the Verbrauch sheet's A-G
-      columns — make sure a merged implementation still places it correctly
-      relative to whatever columns `meter_reading2consumption.py` writes
-- [ ] Decide whether `generate_excel/add_gaps_to_verbrauch.py` should be kept
-      as a standalone script afterward (for adding gaps to an
-      already-generated workbook without regenerating it) or retired once
-      merged
+Detection reuses `find_gaps()` — already shared with `append_to_workbook()`
+from item 3's work — rather than duplicating `gap_detector.py`'s logic or
+shelling out to it. That reuse surfaced a real bug worth noting: a naive
+datetime diff misreports every DST spring-forward transition (clocks
+jumping 02:00→03:00 CEST) as a ~75-minute gap, even though the underlying
+15-minute readings are continuous in real time. Fixed by re-localizing to
+`Europe/Berlin`-aware and diffing that instead — but only for pairs that
+already exceed the threshold under a plain naive diff, since blindly
+re-localizing *every* pair breaks on DST fall-back's ambiguous repeated
+hour (pytz can't tell which of the two 2025-10-26 02:00-02:59 occurrences
+a naive time belongs to) and can otherwise manufacture a gap that was
+never a candidate in the first place.
 
-## 7. Add a "Summe" total row below the Verbrauch sheet, fix the next-month check
+`generate_excel/add_gaps_to_verbrauch.py` and `generate_excel/gap_detector.py`
+are kept as standalone scripts for now (not retired) - the layout question
+from the original checklist (avoiding the Verbrauch sheet's A-G columns) no
+longer applies, since the merged version reuses the same `start_col='I'`
+default directly.
 
-Want a `Summe` row directly below the last month's row, summing the
-`Verbrauch` column. This breaks the boundary-chaining formulas from item 5:
-they detect "is there a next month" via `ISBLANK(A{next_row})`, which would
-be `FALSE` for the `Summe` row (its `A` cell isn't blank, it says "Summe"),
-so the last real month's `Grenzwert` formula would wrongly try to interpolate
-against a nonexistent "Summe" sheet.
+## 7. ~~Add a "Summe" total row below the Verbrauch sheet, fix the next-month check~~ (resolved 2026-07-14)
 
-- [ ] Replace the `ISBLANK(A{next_row})` check with a real
-      sheet-existence check: `ISREF(INDIRECT("'"&A{next_row}&"'!A1"))` (the
-      `IS...` family of functions is error-tolerant, so this returns `FALSE`
-      instead of propagating `INDIRECT`'s `#REF!` when no such sheet exists)
-      — canonical English/comma form if writing via openpyxl, see item 5's
-      note. Test the bare check alone in a scratch cell first, given how many
-      formula surprises this workbook has produced already.
-- [ ] Add the `Summe` row itself (label in column A, `=SUM(...)` over the
-      `Verbrauch` column) once the check above no longer breaks on it
-- [ ] Double check `generate_excel/add_gaps_to_verbrauch.py`'s gap rows
-      (written below the last month row too) don't run into the same
-      "next row isn't a real month" problem, and that a `Summe` row and the
-      gaps block don't end up fighting over the same row
+Added the `Summe` row, plus a `Plausibilitätstest: jüngster Wert - ältester
+Wert` row directly below it (newest overall reading minus oldest overall
+reading - a telescoping-sum identity that must always equal `Summe` exactly
+if the boundary-chaining formulas from item 5 are correct, making it a
+built-in regression check rather than a data check). Both get the German
+number format; `Summe`'s A/B cells are colorized like the header row.
+
+Sidestepped the `ISBLANK`/`ISREF` question entirely: a blank spacer row
+sits between the last month and `Summe`, so the last month's own
+`ISBLANK(A{next_row})` check still correctly lands on a blank cell, not on
+`"Summe"` — no formula rewrite needed. `append_to_workbook()` (item 3) keeps
+both rows correct when new months get appended later: it extends `Summe`'s
+`SUM(...)` range and rewrites `Plausibilitätstest`'s reference to the new
+last month.
+
+Also found and fixed a related bug while implementing this:
+`apply_zebra_formatting()` blanket-restripes every cell's fill in the
+sheet's used range, which was silently overwriting `Summe`'s header-style
+coloring on every `append_to_workbook()` run (not just when a new month
+was added) - confirmed this had already happened to the real production
+file. Now re-applied after every zebra pass.
