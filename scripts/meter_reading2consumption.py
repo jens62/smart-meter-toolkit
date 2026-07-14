@@ -6,6 +6,7 @@ import re
 import glob
 import io
 import subprocess
+import tempfile
 import logging
 import pandas as pd
 import argparse
@@ -672,15 +673,18 @@ def generate_json_output(df, measurement_name, unit, timezone, logger=None):
 
         output_data = {"consumption": []}
         
-        # Group by year and month
+        # Group by year, month AND meter - mixing two meters' readings into
+        # one max-minus-min would compute a meaningless number, since
+        # they're different physical registers with unrelated absolute
+        # values.
         df_json["_year"] = df_json["_time"].dt.strftime("%Y")
         df_json["_month"] = df_json["_time"].dt.strftime("%m")
-        
-        for (year, month), month_df in df_json.groupby(["_year", "_month"]):
+
+        for (year, month, meter), month_df in df_json.groupby(["_year", "_month", "_measurement"]):
             max_val = month_df["_value"].max()
             min_val = month_df["_value"].min()
             consumption = max_val - min_val
-            
+
             meter_values = []
             for _, row in month_df.iterrows():
                 meter_values.append({
@@ -691,10 +695,11 @@ def generate_json_output(df, measurement_name, unit, timezone, logger=None):
                     },
                     "meter_id": row["_measurement"]
                 })
-            
+
             output_data["consumption"].append({
                 "year": year,
                 "month": month,
+                "meter_id": meter,
                 "consumption_month": {
                     "value": round(consumption, 4),
                     "unit": unit
@@ -720,19 +725,21 @@ def generate_xml_output(df, measurement_name, unit, timezone, logger=None):
         # Create root element
         root = ET.Element("consumption_data")
         
-        # Group by year and month
+        # Group by year, month AND meter - see generate_json_output()'s note
+        # on why mixing meters into one max-minus-min would be meaningless.
         df_xml["_year"] = df_xml["_time"].dt.strftime("%Y")
         df_xml["_month"] = df_xml["_time"].dt.strftime("%m")
-        
-        for (year, month), month_df in df_xml.groupby(["_year", "_month"]):
+
+        for (year, month, meter), month_df in df_xml.groupby(["_year", "_month", "_measurement"]):
             max_val = month_df["_value"].max()
             min_val = month_df["_value"].min()
             consumption = max_val - min_val
-            
+
             period = ET.SubElement(root, "period")
             ET.SubElement(period, "year").text = year
             ET.SubElement(period, "month").text = month
-            
+            ET.SubElement(period, "meter_id").text = meter
+
             consumption_month = ET.SubElement(period, "consumption_month")
             ET.SubElement(consumption_month, "value").text = str(round(consumption, 4))
             ET.SubElement(consumption_month, "unit").text = unit
@@ -758,50 +765,77 @@ def generate_xml_output(df, measurement_name, unit, timezone, logger=None):
         raise
 
 def generate_output_files(df, output_dir, logger, measurement_name=None, unit="kWh", out_formats=None, timezone=None, add_gaps=False):
-    """Generate output files in specified formats."""
+    """Generate output files in specified formats - one full set per
+    distinct meter found in df["_measurement"], not one combined set.
+
+    A folder of raw exports can span more than one meter (e.g. a
+    contract/meter swap over the years, or multiple contracts polled in
+    parallel) - mixing their readings into one workbook/CSV/etc. would
+    silently combine two different registers' values. Each meter's own
+    rows instead get their own complete output, named from that meter's
+    own id and its own date range within the data - reusing
+    generate_excel_output() etc. completely unchanged, just called once
+    per meter.
+    """
     if out_formats is None:
         out_formats = ["excel"]
-    
+
     if "none" in out_formats:
         return []
-    
-    if measurement_name is None:
-        measurement_name = df["_measurement"].str.replace(" ", "_").iloc[0] if "_measurement" in df.columns and not df["_measurement"].empty else "unknown"
-    
+
+    if "_measurement" not in df.columns or df["_measurement"].empty:
+        meters = [None]
+    else:
+        meters = sorted(df["_measurement"].unique())
+
+    if len(meters) > 1:
+        if measurement_name is not None:
+            logger.warning(
+                f"{len(meters)} distinct meters found in the input - ignoring the explicit "
+                "measurement_name override and naming each meter's output from its own id"
+            )
+            measurement_name = None
+        logger.info(f"Detected {len(meters)} distinct meter(s): {', '.join(meters)}")
+
     output_files = []
-    
-    if "excel" in out_formats:
-        try:
-            excel_file = generate_excel_output(df, output_dir, measurement_name, unit, timezone, logger, add_gaps)
-            output_files.append(excel_file)
-            logger.info(f"Created Excel file: {excel_file}")
-        except Exception as e:
-            logger.error(f"Failed to generate Excel output: {str(e)}")
-    
-    if "json" in out_formats:
-        try:
-            json_file = generate_json_output_to_file(df, output_dir, measurement_name, unit, timezone, logger)
-            output_files.append(json_file)
-            logger.info(f"Created JSON file: {json_file}")
-        except Exception as e:
-            logger.error(f"Failed to generate JSON output: {str(e)}")
-    
-    if "xml" in out_formats:
-        try:
-            xml_file = generate_xml_output_to_file(df, output_dir, measurement_name, unit, timezone, logger)
-            output_files.append(xml_file)
-            logger.info(f"Created XML file: {xml_file}")
-        except Exception as e:
-            logger.error(f"Failed to generate XML output: {str(e)}")
-    
-    if "csv" in out_formats:
-        try:
-            csv_file = generate_csv_output_to_file(df, output_dir, measurement_name, unit, timezone, logger)
-            output_files.append(csv_file)
-            logger.info(f"Created CSV file: {csv_file}")
-        except Exception as e:
-            logger.error(f"Failed to generate CSV output: {str(e)}")
-    
+    for meter in meters:
+        meter_df = df[df["_measurement"] == meter].copy() if meter is not None else df
+        this_name = measurement_name
+        if this_name is None:
+            this_name = meter.replace(" ", "_") if meter else "unknown"
+
+        if "excel" in out_formats:
+            try:
+                excel_file = generate_excel_output(meter_df, output_dir, this_name, unit, timezone, logger, add_gaps)
+                output_files.append(excel_file)
+                logger.info(f"Created Excel file: {excel_file}")
+            except Exception as e:
+                logger.error(f"Failed to generate Excel output for '{meter}': {str(e)}")
+
+        if "json" in out_formats:
+            try:
+                json_file = generate_json_output_to_file(meter_df, output_dir, this_name, unit, timezone, logger)
+                output_files.append(json_file)
+                logger.info(f"Created JSON file: {json_file}")
+            except Exception as e:
+                logger.error(f"Failed to generate JSON output for '{meter}': {str(e)}")
+
+        if "xml" in out_formats:
+            try:
+                xml_file = generate_xml_output_to_file(meter_df, output_dir, this_name, unit, timezone, logger)
+                output_files.append(xml_file)
+                logger.info(f"Created XML file: {xml_file}")
+            except Exception as e:
+                logger.error(f"Failed to generate XML output for '{meter}': {str(e)}")
+
+        if "csv" in out_formats:
+            try:
+                csv_file = generate_csv_output_to_file(meter_df, output_dir, this_name, unit, timezone, logger)
+                output_files.append(csv_file)
+                logger.info(f"Created CSV file: {csv_file}")
+            except Exception as e:
+                logger.error(f"Failed to generate CSV output for '{meter}': {str(e)}")
+
     return output_files
 
 def generate_csv_output_to_file(df, output_dir, measurement_name, unit, timezone, logger=None):
@@ -837,30 +871,53 @@ def generate_xml_output_to_file(df, output_dir, measurement_name, unit, timezone
     
     return output_filename
 
-def detect_meter_id(csv_files, logger=None):
-    """Read the meter id from a raw export's .json/.xml sibling.
+def detect_meter_id_for_file(csv_file):
+    """Read the meter id from one raw export's own .json/.xml sibling, or
+    None if it has neither (or neither carries an id).
 
     The per-window export CSVs (id;value;scaler;unit;status;capture_time)
     don't carry the meter id themselves - it only lives once per export in
     the sibling JSON/XML file's top-level "id" (JSON) / id attribute (XML).
     """
-    for csv_file in csv_files:
-        base = os.path.splitext(csv_file)[0]
-        json_file = base + ".json"
-        xml_file = base + ".xml"
-        if os.path.isfile(json_file):
+    base = os.path.splitext(csv_file)[0]
+    json_file = base + ".json"
+    xml_file = base + ".xml"
+    if os.path.isfile(json_file):
+        try:
             with open(json_file) as f:
                 data = json.load(f)
             if data.get("id"):
                 return data["id"]
-        if os.path.isfile(xml_file):
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+            pass  # empty/corrupt sibling (seen in years-old archived exports) - try XML next
+    if os.path.isfile(xml_file):
+        try:
             root_id = ET.parse(xml_file).getroot().attrib.get("id")
             if root_id:
                 return root_id
-    raise ValueError(
-        "Could not determine meter id from any .json/.xml sibling of the "
-        "export_*.csv files - pass --meter explicitly"
-    )
+        except ET.ParseError:
+            pass  # empty/corrupt sibling - fall through to None
+    return None
+
+
+def group_files_by_detected_meter(csv_files):
+    """Group raw export files by the meter id detected from each file's own
+    .json/.xml sibling - keyed by that id, or by None for files with no
+    sibling (or whose sibling carries no id).
+
+    Needed because a folder's export_*.csv files can belong to different
+    meters (e.g. a contract/meter swap over the years, or multiple
+    contracts polled in parallel) - a single meter id can't be assumed for
+    the whole folder. This only actually matters for schema-2 rows
+    (id;value;...), which have no meter id of their own; schema-1 rows
+    (logical_name;...) already carry their own meter id per row and are
+    unaffected by whichever group they end up in.
+    """
+    groups = {}
+    for csv_file in csv_files:
+        meter_id = detect_meter_id_for_file(csv_file)
+        groups.setdefault(meter_id, []).append(csv_file)
+    return groups
 
 
 def get_workbook_cutoff(xlsx_path, logger=None):
@@ -886,6 +943,39 @@ def get_workbook_cutoff(xlsx_path, logger=None):
         wb.close()
 
 
+def fix_literal_newlines(csv_files, tmp_dir, logger=None):
+    """Some archived multi-contract exports (schema 3 in
+    normalize_meter_csv.awk: no;meter;id;... / no;cis;meter;id;...) have
+    every row joined by a literal two-character '\\n' escape instead of a
+    real newline - a bug in whatever produced them, seen in a handful of
+    2023 exports, not a normal CSV. awk reads files by real newlines, so
+    such a file is otherwise seen as a single unparseable line.
+
+    Only peeks at the first ~200 bytes (cheap even across tens of
+    thousands of files) to decide whether a file needs rewriting; only
+    matching files get read in full and copied into tmp_dir with real
+    newlines restored. Everything else's path is returned unchanged.
+    """
+    fixed = []
+    patched = 0
+    for f in csv_files:
+        with open(f, 'r', errors='replace') as fh:
+            head = fh.read(200)
+        if head.startswith('no;') and '\\n' in head:
+            with open(f, 'r', errors='replace') as fh:
+                content = fh.read()
+            new_path = os.path.join(tmp_dir, os.path.basename(f))
+            with open(new_path, 'w') as fh:
+                fh.write(content.replace('\\n', '\n'))
+            fixed.append(new_path)
+            patched += 1
+        else:
+            fixed.append(f)
+    if patched and logger:
+        logger.info(f"Restored real newlines in {patched} malformed export file(s)")
+    return fixed
+
+
 def load_raw_export_folder(folder, meter, lo_iso, hi_iso, timezone, divisor, logger=None, newer_than_mtime=None):
     """Normalize a folder of raw export_*.csv files into a processed dataframe.
 
@@ -903,7 +993,10 @@ def load_raw_export_folder(folder, meter, lo_iso, hi_iso, timezone, divisor, log
     guarantees it was already incorporated. Keeps re-runs from re-parsing
     every file in an ever-growing raw-export folder every single night.
     """
-    csv_files = sorted(glob.glob(os.path.join(folder, "export_*.csv")))
+    # Recursive: a raw-export folder can end up with nested subdirectories
+    # (e.g. a tarball extracted into itself) that a single-level glob would
+    # silently skip - seen in practice in local-assets/data/data/.
+    csv_files = sorted(glob.glob(os.path.join(folder, "**", "export_*.csv"), recursive=True))
     if not csv_files:
         raise ValueError(f"No export_*.csv files found in {folder}")
 
@@ -915,18 +1008,38 @@ def load_raw_export_folder(folder, meter, lo_iso, hi_iso, timezone, divisor, log
         if not csv_files:
             return pd.DataFrame(columns=['_time', '_value', '_measurement'])
 
-    if meter is None:
-        meter = detect_meter_id(csv_files, logger)
+    if meter is not None:
+        # Explicit override: apply uniformly to every file's schema-2 rows
+        # (schema-1 rows ignore it regardless, since they carry their own
+        # meter id per row).
+        groups = {meter: csv_files}
+    else:
+        groups = group_files_by_detected_meter(csv_files)
         if logger:
-            logger.info(f"Detected meter id from export siblings: {meter}")
+            for meter_id, files in groups.items():
+                label = meter_id if meter_id is not None else "(no sibling - awk's built-in default)"
+                logger.info(f"{len(files)} export file(s) detected as meter '{label}'")
 
-    result = subprocess.run(
-        ["awk", "-v", f"lo={lo_iso}", "-v", f"hi={hi_iso}", "-v", f"meter={meter}",
-         "-f", NORMALIZE_AWK, "--"] + csv_files,
-        capture_output=True, text=True, check=True,
-    )
+    AWK_BATCH_SIZE = 1500  # stay well under ARG_MAX with thousands of files
+    normalized_chunks = []
+    with tempfile.TemporaryDirectory(prefix="m2c_fixed_newlines_") as tmp_dir:
+        for meter_id, files in groups.items():
+            awk_args = ["awk", "-v", f"lo={lo_iso}", "-v", f"hi={hi_iso}"]
+            if meter_id is not None:
+                awk_args += ["-v", f"meter={meter_id}"]
+            for i in range(0, len(files), AWK_BATCH_SIZE):
+                batch = files[i:i + AWK_BATCH_SIZE]
+                # Sibling-based meter detection above needs each file's own
+                # directory, so this can only rewrite the (rare) malformed
+                # ones now, right before awk sees them - not earlier.
+                batch = fix_literal_newlines(batch, tmp_dir, logger)
+                result = subprocess.run(
+                    awk_args + ["-f", NORMALIZE_AWK, "--"] + batch,
+                    capture_output=True, text=True, check=True,
+                )
+                normalized_chunks.append(result.stdout)
 
-    normalized = "_time;_value;_measurement\n" + result.stdout
+    normalized = "_time;_value;_measurement\n" + "".join(normalized_chunks)
     df = pd.read_csv(io.StringIO(normalized), delimiter=';', parse_dates=['_time'])
     if df.empty:
         return df
@@ -1375,11 +1488,18 @@ Applies to all output formats""",
         try:
             cutoff_before, last_sheet = get_workbook_cutoff(args.append_to, logger)
             logger.info(f"Workbook's latest reading before this run is {cutoff_before} (sheet '{last_sheet}')")
-            xlsx_mtime_before = os.path.getmtime(args.append_to)
+            # Derived from the workbook's own latest-reading content, not
+            # the xlsx file's filesystem mtime - the latter resets on any
+            # copy/scp/touch unrelated to an actual merge, which would
+            # otherwise make every export file in the folder look
+            # "already incorporated" even on this workbook's very first
+            # run against it.
+            tz = pytz.timezone(args.timezone)
+            cutoff_epoch = tz.localize(cutoff_before).timestamp()
 
             df = load_raw_export_folder(
                 args.folder, args.meter, "0001-01-01T00:00:00Z", "9999-12-31T23:59:59Z",
-                args.timezone, args.divisor, logger, newer_than_mtime=xlsx_mtime_before
+                args.timezone, args.divisor, logger, newer_than_mtime=cutoff_epoch
             )
             if df.empty:
                 logger.info("No data found in folder - workbook left unchanged.")
