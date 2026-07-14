@@ -45,16 +45,33 @@ New script, run once per night via cron, that:
       and a gap already given up on isn't queried again
 - [ ] Add this job to `scripts/crontab.example`
 
-## 3. Keep the Excel workbook up to date automatically
+## 3. ~~Keep the Excel workbook up to date automatically~~ (resolved 2026-07-14)
 
-- [ ] If the target `.xlsx` doesn't exist yet, generate it from scratch
-      (`meter_reading2consumption.py`)
-- [ ] If it already exists, update it daily rather than fully regenerating
-      it each time (append the new day's readings — may need an incremental
-      mode in `meter_reading2consumption.py`, which currently only
-      regenerates the whole workbook from a full input range)
-- [ ] Add this as a daily cron job and document it in
-      `scripts/crontab.example`
+Added `--append-to XLSX` (with `--folder` pointing at a raw
+`export_*.csv` directory) to `meter_reading2consumption.py`, updating an
+existing workbook in place instead of regenerating it from scratch. The
+"doesn't exist yet" case was already covered — running the script without
+`--append-to` still generates a fresh workbook from a full input range.
+
+The raw per-window export CSVs don't carry a meter-id column themselves,
+so the folder is normalized via `normalize_meter_csv.awk` (its `lo`/`hi`
+BEGIN vars are now overridable via `-v`, matching the existing `meter`
+override) with the meter id auto-detected from each export's `.json`/`.xml`
+sibling.
+
+This ended up as a real merge rather than a strict "append newer" — it
+dedupes by exact timestamp per month, so one run can backfill an older
+archived day (e.g. from `daily-tar.sh`'s `archives/daily`) alongside
+topping up with today's live export. New months are inserted in
+chronological order ahead of any hand-added trailing rows (e.g. a `Summe`
+total), whose `SUM(...)` range gets extended to match; the workbook is
+renamed to reflect its new latest reading, and any remaining >20min gaps
+per merged month are reported rather than silently left unfilled.
+
+Added as a nightly cron job (before `daily-tar.sh`, though that ordering
+isn't load-bearing) plus a daily `logrotate` check for its log, both
+documented in `scripts/crontab.example` with a
+`scripts/logrotate-append-excel.conf.example` template.
 
 ## 4. ~~Double-check a possibly corrupted line in the Mikrotik config example~~ (resolved: not corrupted)
 
