@@ -1,0 +1,12 @@
+# Example logrotate config for the --append-to workbook-merge log (see
+# crontab.example). Copy this file into your deployment, fill in the
+# placeholder path, and point crontab.example's logrotate line at your copy.
+#
+# Weekly rotation, 8 rotations kept (~2 months), gzip compressed.
+/path/to/logs/append-excel.log {
+    weekly
+    rotate 8
+    compress
+    missingok
+    notifempty
+}

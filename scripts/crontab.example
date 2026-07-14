@@ -22,6 +22,25 @@
   --measurement <measurement-name> \
   > /dev/null 2>&1
 
+# Nightly at 01:50 (before daily-tar.sh below): merge newer/backfilled
+# readings from the data directory into the smart-meter Excel workbook
+# (meter_reading2consumption.py --append-to). The filename is resolved at
+# runtime since the script renames the workbook's _to_<date> suffix after
+# every successful merge. Scheduling this before daily-tar.sh isn't
+# actually load-bearing - daily-tar.sh only copies files into
+# archives/daily, it never deletes originals from the data directory.
+50 1 * * * XLSX=$(ls -t /path/to/workbook-directory/<workbook-name-prefix>_from_*.xlsx | head -1) && /path/to/python3 /path/to/smart-meter-toolkit/scripts/meter_reading2consumption.py \
+  --append-to "$XLSX" --folder /path/to/data-directory --divisor 10000 \
+  >> /path/to/logs/append-excel.log 2>&1
+
+# Daily at 00:05: check whether append-excel.log is due for rotation, per
+# logrotate-append-excel.conf.example (weekly, 8 rotations kept, gzip
+# compressed - copy that file, fill in its placeholder, and point this job
+# at your copy). Running logrotate daily and letting it decide via its own
+# state file (not root's /var/lib/logrotate/status) is the standard way to
+# get reliable weekly rotation without root access.
+05 0 * * * /usr/sbin/logrotate --state /path/to/logs/logrotate-state /path/to/logrotate-append-excel.conf
+
 # Daily at 02:10: tar up yesterday's raw gateway export files.
 10 2 * * * /path/to/smart-meter-toolkit/scripts/daily-tar.sh \
   --base-dir /path/to/data-directory \
