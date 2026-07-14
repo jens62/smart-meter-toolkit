@@ -277,3 +277,38 @@ are consistent with bit 1, `SMGW_ValueNotValidated` ("reading not yet
 validated for billing") - a plausible, well-documented match for the
 empirical finding above, though not certain to the bit (see the doc
 for caveats).
+
+## 10. Extend meter auto-discovery to smgw2influx.sh and the merge job
+
+`gap_backfill.py` no longer needs a fixed `SMGW_METER`/`SMGW_WORKBOOK_PREFIX`
+- it discovers whichever meter(s) the gateway's own meter-select form
+currently reports (`read_SMGW.py --list-meters`) and matches each one
+against whichever workbook in `--workbook-dir` actually holds that
+meter's data, read from the workbook's own content (see
+`docs/scripts-reference.md`). `smgw2influx.sh` (the live 14-min polling
+job) and the merge job's `XLSX=$(ls -t ..."$SMGW_WORKBOOK_PREFIX"_from_*.xlsx
+| head -1)` resolution still rely on the fixed config values - both were
+explicitly out of scope when `gap_backfill.py` was reworked (2026-07-14),
+since they're higher-risk to touch (one runs unattended every 14 minutes
+in production, both are already working).
+
+Until this is done, `SMGW_METER` and `SMGW_WORKBOOK_PREFIX` must stay in
+`~/.config/smgw-pipeline.env` on `ubuntu24-studio` - removing them now
+would break both of those jobs, even though `gap_backfill.py` itself no
+longer reads either one.
+
+- [ ] `smgw2influx.sh`: discover the meter(s) to poll instead of requiring
+      `--meter`/`$SMGW_METER` - needs a decision on what to do if the
+      gateway reports more than one (poll all of them each cycle? one
+      InfluxDB write per meter, presumably needing a per-meter
+      measurement name too, unlike `gap_backfill.py`'s current
+      single-shared-measurement assumption)
+- [ ] Merge job (`meter_reading2consumption.py --append-to`): resolve
+      which workbook(s) to merge into by discovering `*_from_*.xlsx`
+      files in the workbook directory and matching by each workbook's own
+      stored meter id (same approach `gap_backfill.py`'s
+      `find_candidate_workbooks()`/`workbook_own_meter()` already use),
+      instead of a fixed `$SMGW_WORKBOOK_PREFIX` glob
+- [ ] Once both are done, drop `SMGW_METER` and `SMGW_WORKBOOK_PREFIX`
+      from `scripts/smgw-pipeline.env.example` and the real
+      `~/.config/smgw-pipeline.env` on `ubuntu24-studio`

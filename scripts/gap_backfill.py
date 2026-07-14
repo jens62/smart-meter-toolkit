@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Nightly gap-filling: detect gaps in a workbook's recent months and
-re-request each one from the gateway via read_SMGW.py.
+"""Nightly gap-filling: detect gaps in one or more workbooks' recent months
+and re-request each one from the gateway via read_SMGW.py.
 
 The gateway itself caches roughly 15 months of readings (measured
 2026-07-14 for this household's specific gateway - see TODO.md item 8 and
@@ -11,16 +11,30 @@ the fact - this is the "gap in already-exported data" technique from the
 README's "Filling gaps in already-exported data" section, run
 automatically instead of by hand.
 
-Only the last `--months` month-sheets of the workbook are scanned (default
-15, matching the measured gateway retention above - see TODO.md item 8),
-matching this script's purpose: recovering *recent, still-recoverable*
-gaps while they're still in the gateway's own retention window. Older gaps
-remain visible forever in the `--add-gaps` "Luecken" block on the Verbrauch
-sheet - this script doesn't need to, and deliberately doesn't, cover those.
-One consequence of the month-window cut: a gap whose start falls in the
-month just before the window (i.e. the boundary between the excluded and
-included range) is invisible here, since gap detection only compares
-timestamps it was actually given.
+Only the last `--months` month-sheets of each workbook are scanned
+(default 15, matching the measured gateway retention above - see TODO.md
+item 8), matching this script's purpose: recovering *recent,
+still-recoverable* gaps while they're still in the gateway's own
+retention window. Older gaps remain visible forever in the `--add-gaps`
+"Luecken" block on the Verbrauch sheet - this script doesn't need to, and
+deliberately doesn't, cover those. One consequence of the month-window
+cut: a gap whose start falls in the month just before the window (i.e.
+the boundary between the excluded and included range) is invisible here,
+since gap detection only compares timestamps it was actually given.
+
+Multi-meter handling: with --workbook-dir (the normal, cron-scheduled
+mode), every *_from_*.xlsx workbook found there (latest-modified file per
+distinct meter-prefix, in case older superseded copies are lying around)
+is checked against the meters the gateway's own meter-select form
+*currently* reports (read_SMGW.py --list-meters) - a workbook whose meter
+isn't in that live list is skipped, since the gateway definitionally has
+nothing to recover for a meter it no longer sees (e.g. after this
+household's ITR03 -> EMH00 swap - though note the gateway kept *both* in
+its list when this was checked 2026-07-14, so "no longer shown" isn't
+guaranteed to happen even after a swap; don't assume it will).
+--workbook and --meter together bypass discovery entirely, for manual
+single-workbook use (e.g. testing) - both must be given, since guessing
+one from the other isn't attempted.
 
 A gap is retried once per calendar day (state persisted in --state-file,
 so re-running this script multiple times in the same day is a no-op for
@@ -28,13 +42,14 @@ gaps already attempted today - safe for manual testing). After
 --max-retries attempts across separate days with the gap still open, it's
 marked "given up" and skipped on every later run, until the day it
 actually disappears from detection (at which point it's dropped from the
-state file as resolved).
+state file as resolved). --max-requests-per-run is a shared budget across
+every workbook processed in one run, not per-workbook.
 
-This script never touches the workbook itself - it only writes new raw
+This script never touches any workbook directly - it only writes new raw
 export files into --out-path's data/ subdirectory, the same place
 smgw2influx.sh's underlying reader writes them, and the same place
 --append-to and daily-tar.sh already expect to find them. Picking up the
-recovered data into the workbook and its Luecken block still happens via
+recovered data into a workbook and its Luecken block still happens via
 the normal --append-to --add-gaps run, whenever that next runs.
 
 If --influx-url/--influx-org/--influx-bucket/--influx-measurement (and
@@ -45,7 +60,10 @@ a gap recovered here would never appear in InfluxDB at all, only in the
 Excel pipeline. Uses the same line-protocol shape (line 77 of the legacy
 smgw2influx.sh on the deployment host: "<measurement>,item=<measurement>
 value=<v> <epoch_ns>") so recovered points land in the same series as
-everything else, not a separate one.
+everything else, not a separate one. All discovered/processed meters
+share the same --influx-measurement - if that's ever wrong for a
+multi-meter household, this would need a per-meter measurement mapping,
+which doesn't exist yet.
 """
 
 import argparse
@@ -62,7 +80,7 @@ import pytz
 import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from meter_reading2consumption import MONTH_TAG_RE, find_gaps, read_month_rows  # noqa: E402
+from meter_reading2consumption import MONTH_TAG_RE, find_gaps, format_measurement, read_month_rows  # noqa: E402
 
 from openpyxl import load_workbook
 
@@ -76,8 +94,8 @@ def setup_logging(log_level):
     return logging.getLogger(__name__)
 
 
-def gap_key(gap_start, gap_end):
-    return f"{gap_start.isoformat()}__{gap_end.isoformat()}"
+def gap_key(meter, gap_start, gap_end):
+    return f"{meter}::{gap_start.isoformat()}__{gap_end.isoformat()}"
 
 
 def collect_recent_times(xlsx_path, months, logger):
@@ -91,7 +109,7 @@ def collect_recent_times(xlsx_path, months, logger):
         if not month_sheets:
             raise ValueError(f"No monthly sheets found in {xlsx_path}")
         window = month_sheets[-months:]
-        logger.info(f"Scanning {len(window)} month sheet(s): {', '.join(window)}")
+        logger.info(f"Scanning {len(window)} month sheet(s) in {os.path.basename(xlsx_path)}: {', '.join(window)}")
         times = []
         for name in window:
             for dt, _time_str, _value, _meas in read_month_rows(wb[name]):
@@ -101,6 +119,79 @@ def collect_recent_times(xlsx_path, months, logger):
         return times, window_start
     finally:
         wb.close()
+
+
+def workbook_own_meter(xlsx_path, logger):
+    """The Zaehleridentifikation value stored in this workbook's own data
+    (first data row of its earliest month-sheet) - the workbook's actual
+    meter, read from its content rather than assumed from its filename.
+    None if the workbook has no data rows at all."""
+    wb = load_workbook(xlsx_path, read_only=True)
+    try:
+        month_sheets = sorted(s for s in wb.sheetnames if MONTH_TAG_RE.match(s))
+        if not month_sheets:
+            return None
+        rows = read_month_rows(wb[month_sheets[0]])
+        return rows[0][3] if rows else None
+    finally:
+        wb.close()
+
+
+def find_candidate_workbooks(workbook_dir, logger):
+    """Latest-modified *_from_*.xlsx per distinct meter *actually found in
+    each file's own data* - not per filename prefix. Filename prefixes
+    aren't a reliable grouping key on their own: an old, abandoned
+    workbook from an earlier pipeline version can use a different naming
+    convention for the same meter (found directly on the deployment host -
+    a stale "01005e31803c.1emh0011802881.sm_from_..." workbook for the same
+    meter as the live "1_EMH00_1180_2881_from_..." one, last touched over a
+    year before this was written) - grouping by filename would process
+    that meter twice, once per naming convention, instead of once.
+
+    Even grouping by the workbook's own stored id isn't quite enough on its
+    own: that same old workbook stores the *raw* dotted logical name
+    (format_measurement() hadn't been introduced yet when it was written),
+    while the live workbook stores the already-formatted form - same
+    meter, two different strings. format_measurement() is idempotent (a
+    value that's already formatted passes through unchanged), so running
+    every stored id through it first normalizes both to the same canonical
+    key regardless of which convention a given workbook happens to use."""
+    paths = glob.glob(os.path.join(workbook_dir, "*_from_*.xlsx"))
+    by_meter = {}
+    for p in paths:
+        raw_id = workbook_own_meter(p, logger)
+        if raw_id is None:
+            logger.warning(f"{os.path.basename(p)}: no data rows, skipping")
+            continue
+        meter_id = format_measurement(raw_id)
+        if meter_id not in by_meter or os.path.getmtime(p) > os.path.getmtime(by_meter[meter_id]):
+            by_meter[meter_id] = p
+    return sorted(by_meter.values())
+
+
+def discover_live_meters(args, logger):
+    """Raw logical names of every meter currently in the gateway's own
+    meter-select form, via read_SMGW.py --list-meters. Empty list (not
+    None) on a clean "gateway reports no meters" response; None on an
+    actual failure to reach/parse the gateway."""
+    cmd = [
+        args.python, args.read_smgw_script,
+        "--host", args.host,
+        "--user", args.user,
+        "--password", args.password,
+        "--list-meters",
+    ]
+    logged_cmd = [c if c != args.password else "***" for c in cmd]
+    logger.info(f"Discovering currently-connected meters: {' '.join(logged_cmd)}")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=args.request_timeout)
+    except subprocess.TimeoutExpired:
+        logger.error(f"--list-meters timed out after {args.request_timeout}s")
+        return None
+    if result.returncode != 0:
+        logger.error(f"--list-meters failed: {result.stderr.strip()[-500:]}")
+        return None
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
 def load_state(path):
@@ -134,7 +225,7 @@ def pad_local_time(naive_local_dt, minutes, timezone):
     return tz.normalize(aware + timedelta(minutes=minutes)).replace(tzinfo=None)
 
 
-def query_gateway(args, gap_start, gap_end, logger):
+def query_gateway(args, gap_start, gap_end, meter, logger):
     """Returns (ok, csv_path). csv_path is None if the request failed or
     the expected output file wasn't found (e.g. a chunking edge case)."""
     from_str = pad_local_time(gap_start, -args.pad_minutes, args.timezone).strftime("%Y-%m-%d %H:%M:%S")
@@ -149,8 +240,8 @@ def query_gateway(args, gap_start, gap_end, logger):
         "--to", to_str,
         "--out-path", args.out_path,
     ]
-    if args.meter:
-        cmd += ["--meter", args.meter]
+    if meter:
+        cmd += ["--meter", meter]
 
     logged_cmd = [c if c != args.password else "***" for c in cmd]
     logger.info(f"Querying gateway for {from_str} .. {to_str}: {' '.join(logged_cmd)}")
@@ -230,20 +321,139 @@ def write_to_influx(csv_path, args, logger):
     return len(lines)
 
 
+def resolve_workbook_meter_pairs(args, logger):
+    """[(workbook_path, meter), ...] to actually process this run."""
+    if args.workbook and args.meter:
+        return [(args.workbook, args.meter)]
+    if args.workbook or args.meter:
+        logger.error("--workbook and --meter must be given together (or neither, to use --workbook-dir discovery)")
+        sys.exit(1)
+    if not args.workbook_dir:
+        logger.error("Either --workbook and --meter together, or --workbook-dir, must be given")
+        sys.exit(1)
+
+    live_meters = discover_live_meters(args, logger)
+    if live_meters is None:
+        sys.exit(1)
+    logger.info(f"Gateway currently shows {len(live_meters)} meter(s): {', '.join(live_meters) or '(none)'}")
+
+    candidates = find_candidate_workbooks(args.workbook_dir, logger)
+    logger.info(f"Found {len(candidates)} candidate workbook(s) in {args.workbook_dir}")
+
+    pairs = []
+    for wb_path in candidates:
+        raw_stored_id = workbook_own_meter(wb_path, logger)
+        if raw_stored_id is None:
+            logger.warning(f"{os.path.basename(wb_path)}: no data rows, skipping")
+            continue
+        stored_id = format_measurement(raw_stored_id)  # normalize old-style raw ids too, see find_candidate_workbooks()
+        match = next((m for m in live_meters if format_measurement(m) == stored_id), None)
+        if match is None:
+            logger.info(
+                f"{os.path.basename(wb_path)} (meter '{stored_id}') is not currently connected "
+                f"to the gateway - skipping, nothing recoverable"
+            )
+            continue
+        pairs.append((wb_path, match))
+    return pairs
+
+
+def process_workbook(workbook_path, meter, args, state, today, budget_remaining, logger):
+    """One workbook's worth of detect-gaps-and-recover. Mutates `state` in
+    place. Returns (queried, failed, influx_written, deferred_count,
+    new_budget_remaining)."""
+    delta = pd.Timedelta(args.delta)
+
+    try:
+        times, window_start = collect_recent_times(workbook_path, args.months, logger)
+    except (FileNotFoundError, ValueError) as e:
+        logger.error(str(e))
+        return 0, 0, 0, 0, budget_remaining
+
+    detected = find_gaps(times, threshold=delta, timezone=args.timezone)
+    detected.sort(key=lambda g: g[0])  # oldest gap first - find_gaps() returns newest-first
+    detected_keys = {gap_key(meter, start, end): (start, end) for start, end, _duration in detected}
+    logger.info(f"{meter}: detected {len(detected)} gap(s) over {delta} in the last {args.months} month(s)")
+
+    for key in list(state.keys()):
+        if key.startswith(f"{meter}::") and key not in detected_keys:
+            entry = state.pop(key)
+            gap_end = datetime.fromisoformat(entry["end"])
+            if gap_end < window_start:
+                logger.info(f"{meter}: gap {entry['start']} .. {entry['end']} aged out of the {args.months}-month window (untracked)")
+            else:
+                logger.info(f"{meter}: gap {entry['start']} .. {entry['end']} resolved (no longer detected)")
+
+    to_query = []
+    for key, (start, end) in detected_keys.items():
+        entry = state.setdefault(key, {
+            "meter": meter, "start": start.isoformat(), "end": end.isoformat(),
+            "attempts": 0, "last_attempt_date": None, "status": "open",
+        })
+        if entry["status"] == "given_up":
+            logger.debug(f"{meter}: gap {start} .. {end}: given up previously, skipping")
+            continue
+        if entry["attempts"] >= args.max_retries:
+            entry["status"] = "given_up"
+            logger.warning(f"{meter}: gap {start} .. {end}: still open after {entry['attempts']} attempts, giving up")
+            continue
+        if entry["last_attempt_date"] == today:
+            logger.debug(f"{meter}: gap {start} .. {end}: already attempted today, skipping")
+            continue
+        to_query.append((key, start, end, entry))
+
+    deferred = to_query[budget_remaining:]
+    to_query = to_query[:budget_remaining]
+    if deferred:
+        logger.warning(
+            f"{meter}: deferring {len(deferred)} eligible gap(s) to a later run (shared --max-requests-per-run budget exhausted): "
+            + ", ".join(f"{s} .. {e}" for _k, s, e, _entry in deferred)
+        )
+
+    queried, failed, influx_written = 0, 0, 0
+    for key, start, end, entry in to_query:
+        if args.dry_run:
+            logger.info(f"{meter}: [dry-run] would query gateway for gap {start} .. {end} (attempt {entry['attempts'] + 1}/{args.max_retries})")
+            continue
+        ok, csv_path = query_gateway(args, start, end, meter, logger)
+        entry["attempts"] += 1
+        entry["last_attempt_date"] = today
+        entry["last_result"] = "ok" if ok else "failed"
+        queried += 1
+        if not ok:
+            failed += 1
+        elif csv_path and influx_enabled(args):
+            influx_written += write_to_influx(csv_path, args, logger)
+
+    return queried, failed, influx_written, len(deferred), budget_remaining - len(to_query)
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Detect recent gaps in a workbook and re-request them from the gateway.",
+        description="Detect recent gaps in one or more workbooks and re-request them from the gateway.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""Example (manual test run, not yet wired into cron):
+        epilog="""Examples:
+  # Normal, cron-scheduled mode: discover every currently-connected meter
+  # and match it against workbooks found in --workbook-dir.
   %(prog)s \\
-      --workbook /path/to/1_EMH00_..._to_....xlsx \\
+      --workbook-dir /path/to/workbook-directory \\
+      --state-file /path/to/gap_backfill_state.json \\
+      --out-path /path/to/data-directory \\
+      --user <user> --password <password> \\
+      --dry-run
+
+  # Manual single-workbook override, bypassing discovery entirely:
+  %(prog)s \\
+      --workbook /path/to/1_EMH00_..._to_....xlsx --meter <meter> \\
       --state-file /path/to/gap_backfill_state.json \\
       --out-path /path/to/data-directory \\
       --user <user> --password <password> \\
       --dry-run
 """,
     )
-    parser.add_argument("--workbook", required=True, help="Workbook to scan for gaps")
+    parser.add_argument("--workbook-dir", help="Directory to discover workbooks in (normal mode)")
+    parser.add_argument("--workbook", help="Single workbook to scan - requires --meter too, bypasses discovery")
+    parser.add_argument("--meter", help="Meter id for --workbook - requires --workbook too, bypasses discovery")
     parser.add_argument("--months", type=int, default=15,
                         help="How many trailing month-sheets to scan (default: 15, matching this "
                              "gateway's measured retention window - see TODO.md item 8)")
@@ -254,8 +464,9 @@ def main():
     parser.add_argument("--max-retries", type=int, default=3,
                         help="Give up on a gap after this many days of still being open")
     parser.add_argument("--max-requests-per-run", type=int, default=10,
-                        help="Cap gateway requests in one run (be gentle on the gateway); "
-                             "excess eligible gaps are deferred to the next run, oldest first")
+                        help="Cap gateway requests in one run, shared across every workbook processed "
+                             "(be gentle on the gateway); excess eligible gaps are deferred to the "
+                             "next run, oldest first")
     parser.add_argument("--pad-minutes", type=int, default=30,
                         help="Widen each gateway request by this many minutes on either side "
                              "of the detected gap, to be safe against boundary readings")
@@ -266,7 +477,6 @@ def main():
     parser.add_argument("--user", required=True, help="Gateway user")
     parser.add_argument("--password", default=os.environ.get("SMGW_PASSWORD"),
                         help="Gateway password (default: $SMGW_PASSWORD)")
-    parser.add_argument("--meter", help="Meter id override, passed through to read_SMGW.py")
     parser.add_argument("--out-path", required=True,
                         help="Base directory read_SMGW.py writes into (creates/uses its own data/ subdir)")
     parser.add_argument("--read-smgw-script",
@@ -301,71 +511,25 @@ def main():
     else:
         logger.info("InfluxDB writes disabled (not all of --influx-url/--influx-org/--influx-bucket/--influx-measurement/--influx-token given)")
 
-    delta = pd.Timedelta(args.delta)
-
-    try:
-        times, window_start = collect_recent_times(args.workbook, args.months, logger)
-    except (FileNotFoundError, ValueError) as e:
-        logger.error(str(e))
-        sys.exit(1)
-
-    detected = find_gaps(times, threshold=delta, timezone=args.timezone)
-    detected.sort(key=lambda g: g[0])  # oldest gap first - find_gaps() returns newest-first
-    detected_keys = {gap_key(start, end): (start, end) for start, end, _duration in detected}
-    logger.info(f"Detected {len(detected)} gap(s) over {delta} in the last {args.months} month(s)")
+    pairs = resolve_workbook_meter_pairs(args, logger)
+    if not pairs:
+        logger.info("No workbook to process this run (none matched a currently-connected meter) - nothing to do")
+        sys.exit(0)
 
     state = load_state(args.state_file)
     today = date.today().isoformat()
+    budget = args.max_requests_per_run
 
-    for key in list(state.keys()):
-        if key not in detected_keys:
-            entry = state.pop(key)
-            gap_end = datetime.fromisoformat(entry["end"])
-            if gap_end < window_start:
-                logger.info(f"Gap {entry['start']} .. {entry['end']} aged out of the {args.months}-month window (untracked)")
-            else:
-                logger.info(f"Gap {entry['start']} .. {entry['end']} resolved (no longer detected)")
-
-    to_query = []
-    for key, (start, end) in detected_keys.items():
-        entry = state.setdefault(key, {
-            "start": start.isoformat(), "end": end.isoformat(),
-            "attempts": 0, "last_attempt_date": None, "status": "open",
-        })
-        if entry["status"] == "given_up":
-            logger.debug(f"Gap {start} .. {end}: given up previously, skipping")
-            continue
-        if entry["attempts"] >= args.max_retries:
-            entry["status"] = "given_up"
-            logger.warning(f"Gap {start} .. {end}: still open after {entry['attempts']} attempts, giving up")
-            continue
-        if entry["last_attempt_date"] == today:
-            logger.debug(f"Gap {start} .. {end}: already attempted today, skipping")
-            continue
-        to_query.append((key, start, end, entry))
-
-    deferred = to_query[args.max_requests_per_run:]
-    to_query = to_query[:args.max_requests_per_run]
-    if deferred:
-        logger.warning(
-            f"Deferring {len(deferred)} eligible gap(s) to a later run (--max-requests-per-run={args.max_requests_per_run}): "
-            + ", ".join(f"{s} .. {e}" for _k, s, e, _entry in deferred)
+    total_detected_workbooks = len(pairs)
+    total_queried = total_failed = total_influx_written = total_deferred = 0
+    for workbook_path, meter in pairs:
+        queried, failed, influx_written, deferred, budget = process_workbook(
+            workbook_path, meter, args, state, today, budget, logger
         )
-
-    queried, failed, influx_written = 0, 0, 0
-    for key, start, end, entry in to_query:
-        if args.dry_run:
-            logger.info(f"[dry-run] would query gateway for gap {start} .. {end} (attempt {entry['attempts'] + 1}/{args.max_retries})")
-            continue
-        ok, csv_path = query_gateway(args, start, end, logger)
-        entry["attempts"] += 1
-        entry["last_attempt_date"] = today
-        entry["last_result"] = "ok" if ok else "failed"
-        queried += 1
-        if not ok:
-            failed += 1
-        elif csv_path and influx_enabled(args):
-            influx_written += write_to_influx(csv_path, args, logger)
+        total_queried += queried
+        total_failed += failed
+        total_influx_written += influx_written
+        total_deferred += deferred
 
     if not args.dry_run:
         save_state(args.state_file, state)
@@ -373,9 +537,9 @@ def main():
         logger.info("[dry-run] state file not written")
 
     logger.info(
-        f"Done: {len(detected)} open gap(s), {queried} queried ({failed} failed), "
-        f"{influx_written} row(s) written to InfluxDB, "
-        f"{len(deferred)} deferred, "
+        f"Done: {total_detected_workbooks} workbook(s) processed, {total_queried} queried ({total_failed} failed), "
+        f"{total_influx_written} row(s) written to InfluxDB, "
+        f"{total_deferred} deferred, "
         f"{sum(1 for e in state.values() if e['status'] == 'given_up')} given up total"
     )
 

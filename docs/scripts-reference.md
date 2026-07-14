@@ -55,7 +55,26 @@ Key flags:
 | `--out-path` | Writes into `<out-path>/data/`, not `<out-path>` directly |
 | `--out-format` | Any of `cms xml csv json` (default: all four) |
 | `--meter` | Required when the gateway serves more than one meter |
+| `--list-meters` | Connect, print every meter currently in the gateway's own meter-select form (one per line), and exit - no `--from`/`--to`/`--meter` needed |
 | `--max` / `--interval` | Chunk sizing for splitting a large `--from`/`--to` span into multiple gateway requests - see "Chunking gotcha" below |
+
+**Meter discovery (`--list-meters`)**: the gateway's `meterform` HTML
+response includes a `<select name="mid">` with one `<option>` per meter
+it currently sees (`extract_mid_and_tkn()` already parsed this to
+validate `--meter` against, erroring out with the full list if `--meter`
+was omitted and there was more than one option - `--list-meters` just
+returns that same list instead of erroring). This is what
+`gap_backfill.py` uses to discover meters dynamically instead of relying
+on a fixed config value - see its own section below.
+
+**A meter being physically disconnected doesn't reliably remove it from
+this list.** Checked directly on 2026-07-15: `--list-meters` against
+this household's real gateway still returned *both*
+`01005e318002.1itr0310077721.sm` (ITR03, physically swapped out for
+EMH00 back in 2023) *and* `01005e318002.1emh0011802881.sm` (EMH00, the
+one actually connected today). Don't design anything that assumes a
+disconnected meter will eventually stop appearing here - it may not,
+at least not on this gateway/firmware.
 
 **Timezone**: `--from`/`--to` are plain wall-clock strings passed
 straight through to the gateway's own `exportMeterValues` HTTP action -
@@ -220,16 +239,17 @@ correctness matters.
 
 ### `gap_backfill.py`
 
-Nightly gap-filling: detects gaps in a workbook's recent months, then
-re-requests each one from the gateway via `read_SMGW.py`.
+Nightly gap-filling: detects gaps in one or more workbooks' recent
+months, then re-requests each one from the gateway via `read_SMGW.py`.
 
 | Flag | Meaning |
 |---|---|
-| `--workbook` | Workbook to scan |
-| `--months` | Trailing month-sheets to scan (default 15, matching this gateway's measured retention - see `TODO.md` item 8) |
+| `--workbook-dir` | Normal mode: discover every currently-connected meter and match each against a workbook found here (see "Multi-meter discovery" below) |
+| `--workbook` / `--meter` | Manual override, bypassing discovery entirely - process exactly this one workbook/meter pair. Both required together if either is given |
+| `--months` | Trailing month-sheets to scan per workbook (default 15, matching this gateway's measured retention - see `TODO.md` item 8) |
 | `--state-file` | JSON file tracking per-gap retry state, persisted across runs |
 | `--max-retries` | Give up on a gap after this many *days* of still being open (default 3) |
-| `--max-requests-per-run` | Caps gateway load per run; excess eligible gaps are deferred (oldest first), never silently dropped |
+| `--max-requests-per-run` | Caps gateway load per run, shared across every workbook processed (not per-workbook); excess eligible gaps are deferred (oldest first), never silently dropped |
 | `--pad-minutes` | Widens each gateway request on either side of the detected gap (default 30) |
 | `--influx-url` / `--influx-org` / `--influx-bucket` / `--influx-measurement` | If all four (plus `--influx-token` or `$INFLUXDB_TOKEN`) are given, a successfully-recovered gap's readings are also written to InfluxDB - omit any of them to skip InfluxDB entirely |
 | `--divisor` | Raw counter value -> InfluxDB unit, only used for the InfluxDB write (default 10000) |
@@ -242,6 +262,50 @@ already attempted today - safe for testing. After `--max-retries`
 separate days of still being open, a gap is marked `given_up` and
 skipped on every later run, until the day it's no longer detected at
 all (at which point it's dropped from the state file as resolved).
+
+**Multi-meter discovery** (`--workbook-dir` mode, the normal
+cron-scheduled path): rather than a fixed meter/workbook in config,
+`resolve_workbook_meter_pairs()` (1) calls `read_SMGW.py --list-meters`
+to get every meter the gateway *currently* reports, (2)
+`find_candidate_workbooks()` globs `*_from_*.xlsx` in `--workbook-dir`
+and reads each file's *own* stored meter id (`workbook_own_meter()` -
+the "Zähleridentifikation" value from its first data row), deduping to
+the latest-modified file per distinct meter, and (3) only keeps a
+workbook whose meter is in the live list - a workbook whose meter isn't
+currently connected is skipped and logged, since the gateway
+definitionally has nothing to recover for it.
+
+Two things this had to specifically account for, both found by testing
+against the real deployment host's actual files, not assumed:
+
+- **String format mismatch between old and new workbooks.** An
+  abandoned workbook from an earlier pipeline version (found directly on
+  `ubuntu24-studio`: `01005e31803c.1emh0011802881.sm_from_..._to_2025-04-18...xlsx`,
+  over a year stale) stores its meter id as the *raw* dotted logical
+  name, while the live workbook stores `format_measurement()`'s
+  formatted form - same physical meter, two different strings. Grouping
+  candidates by their raw stored id would treat these as two different
+  meters and process the stale one too. Fixed by running every stored id
+  through `format_measurement()` before comparing - it's idempotent (an
+  already-formatted value passes through unchanged), so it correctly
+  normalizes either convention to the same key regardless of which one a
+  given workbook happens to use.
+- **A disconnected meter isn't reliably removed from the gateway's own
+  list** (see `read_SMGW.py`'s section above - ITR03 still showed up in
+  2026-07-15 testing, over 2 years after being swapped out). So
+  "currently connected" per this mechanism is necessary but not
+  sufficient to guarantee a workbook's gaps are actually recoverable -
+  if a long-dormant workbook's meter is (still) listed, its gaps will
+  get genuinely queried, just harmlessly failing until `--max-retries`
+  gives up on each one after a few nights. Not a problem in practice
+  today (the ITR03 workbook was never deployed to `ubuntu24-studio` -
+  it's a `local-assets`-only research artifact from this repo's history,
+  see `TODO.md` item 10), but would matter if it, or something like it,
+  ever were.
+
+`--workbook`/`--meter` bypass all of the above for manual single-pair
+use (e.g. testing) - both are required together since guessing one from
+the other isn't attempted.
 
 **Padding is DST-safe**: `pad_local_time()` localizes the naive gap
 boundary, adds the padding in absolute time, then normalizes back to

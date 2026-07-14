@@ -30,24 +30,40 @@
 # daily-tar.sh's position below): anything this recovers gets picked up by
 # that same night's merge instead of waiting an extra day.
 #
+# --workbook-dir (not a fixed --workbook/--meter pair): discovers every
+# meter the gateway's own meter-select form *currently* reports and
+# matches it against whichever workbook in this directory actually holds
+# that meter's data (read from each workbook's own content, not assumed
+# from a filename prefix - so a meter swap doesn't need a config change
+# here). No SMGW_METER/SMGW_WORKBOOK_PREFIX needed for this job. Note:
+# a meter being physically gone doesn't reliably remove it from that
+# gateway form - checked 2026-07-14 and it still listed a meter swapped
+# out back in 2023 - so this alone doesn't prevent wasted requests for a
+# workbook whose meter turns out to still be listed; --max-retries still
+# bounds that to a few nights either way.
+#
 # The polling job above runs every 14 minutes around the clock (minutes
 # 0/14/28/42/56 of every hour), and this script makes its own sequential
 # gateway requests - deliberately scheduled to avoid overlapping that job,
 # since the gateway is slow (each request is a full digest-auth handshake).
 # Minute 35 is the furthest point from both neighboring polls (28 and 42 -
 # ~7 minutes either side); --max-requests-per-run 3 keeps the typical total
-# run time well under that margin. This is a schedule-only safeguard, not a
-# lock - there's deliberately no persistent check for whether smgw2influx.sh
-# is currently running.
+# run time well under that margin (this budget is shared across every
+# workbook processed in one run, not per-workbook). This is a
+# schedule-only safeguard, not a lock - there's deliberately no persistent
+# check for whether smgw2influx.sh is currently running.
 #
 # --influx-* here means anything successfully recovered also gets written
 # to InfluxDB, not just the Excel workbook - the polling job above only
 # ever writes "the last --past minutes", so without this a recovered gap
 # would never appear in InfluxDB at all. Omit all four --influx-* flags to
-# skip InfluxDB entirely.
-35 1 * * * . ~/.config/smgw-pipeline.env && XLSX=$(ls -t "$SMGW_WORKBOOK_DIR"/"$SMGW_WORKBOOK_PREFIX"_from_*.xlsx | head -1) && /path/to/python3 /path/to/smart-meter-toolkit/scripts/gap_backfill.py \
-  --workbook "$XLSX" --state-file "$SMGW_LOG_DIR"/gap-backfill-state.json \
-  --out-path "$SMGW_BASE_DIR" --host "$SMGW_HOST" --user "$SMGW_USER" --meter "$SMGW_METER" \
+# skip InfluxDB entirely. All discovered meters share this one
+# --influx-measurement - fine for this household (single gateway stream
+# regardless of which meter is connected), but would need a per-meter
+# mapping if that ever isn't true.
+35 1 * * * . ~/.config/smgw-pipeline.env && /path/to/python3 /path/to/smart-meter-toolkit/scripts/gap_backfill.py \
+  --workbook-dir "$SMGW_WORKBOOK_DIR" --state-file "$SMGW_LOG_DIR"/gap-backfill-state.json \
+  --out-path "$SMGW_BASE_DIR" --host "$SMGW_HOST" --user "$SMGW_USER" \
   --influx-url "$INFLUXDB_URL" --influx-org "$INFLUXDB_ORG" --influx-bucket "$INFLUXDB_BUCKET" --influx-measurement "$INFLUXDB_MEASUREMENT" \
   --max-requests-per-run 3 \
   >> "$SMGW_LOG_DIR"/gap-backfill.log 2>&1

@@ -105,6 +105,11 @@ Examples:
         other_group.add_argument('--log_level', default='INFO',
                                choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                                help='Log level (default: %(default)s)')
+        other_group.add_argument('--list-meters', action='store_true',
+                               help='Connect, list the meters currently visible in the gateway\'s '
+                                    'own meter-select form (one per line, to stdout), and exit. '
+                                    'No --from/--to/--past/--meter needed - just --user/--password '
+                                    '(and --host if not the default).')
         other_group.add_argument('-v', '--verbose', action='store_true',
                                help='Verbose output')
         other_group.add_argument('-h', '--help', action='store_true',
@@ -119,6 +124,12 @@ Examples:
             sys.exit(1)
 
     def validate_params(self):
+        if self.args.list_meters:
+            if not all([self.args.user, self.args.password]):
+                self.logger.error("--user and --password are required for --list-meters")
+                sys.exit(1)
+            return
+
         if self.args.input_format == 'none':
             # Validate required connection parameters
             if not all([self.args.user, self.args.password]):
@@ -306,6 +317,50 @@ Examples:
             mid = meter_option['value']
 
         return mid, tkn
+
+    def list_meters(self):
+        """Full logical names of every meter currently in the gateway's own
+        meter-select form (the same <select name="mid"> extract_mid_and_tkn()
+        reads, just without requiring --meter or erroring on more than one
+        option) - i.e. what's actually connected right now, not a fixed,
+        possibly-stale config value. A meter physically swapped out (e.g.
+        this household's ITR03 -> EMH00 change) stops appearing here as soon
+        as it's disconnected, even though its historical data/workbook still
+        exists - callers that need to tell "still connected" apart from
+        "used to exist" should cross-reference against this list, not assume
+        every known workbook's meter is still reachable."""
+        if not self.tcp_port_is_open(self.args.host, self.args.port):
+            self.logger.error(f"Could not connect to host {self.args.host} on port {self.args.port}")
+            return None
+
+        session = requests.Session()
+        session.auth = HTTPDigestAuth(self.args.user, self.args.password)
+        session.verify = False
+        session.headers.update({'User-Agent': 'curl/7.88.1'})
+
+        try:
+            response = session.post(
+                f"https://{self.args.host}/cgi-bin/hanservice.cgi",
+                data={'action': 'meterform'},
+                headers={'Content-Type': 'application/x-www-form-urlencoded'}
+            )
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Failed to get meter form: {str(e)}")
+            return None
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+        meter_form = soup.find('form', {'id': 'form_meterform'})
+        if not meter_form:
+            self.logger.error("Could not find meter form in HTML")
+            return None
+
+        meter_select = meter_form.find('select', {'name': 'mid'})
+        if not meter_select:
+            self.logger.error("No meter-select element found - gateway reports no meters at all")
+            return []
+
+        return [option.text.strip() for option in meter_select.find_all('option')]
 
 
 
@@ -914,7 +969,15 @@ Examples:
     def run(self):
         """Main execution method with improved error handling"""
         self.check_dependencies()
-        
+
+        if self.args.list_meters:
+            meters = self.list_meters()
+            if meters is None:
+                sys.exit(1)
+            for name in meters:
+                print(name)
+            return
+
         try:
             if self.args.input_format == 'none':
                 result = self.get_meter_data()
