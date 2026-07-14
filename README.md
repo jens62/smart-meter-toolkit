@@ -1,4 +1,4 @@
-# meter handling
+# Smart Meter Toolkit
 
 This repository is about 
 - reading meters, 
@@ -82,9 +82,37 @@ Use the usual `--help` or `--h` to be overwhelmed by the possibilities.
 
 ### Output format
 
-`meter_reading2consumption.py` writes one Excel workbook per run: a `Verbrauch` sheet with one row per month (`Monat` / `Verbrauch [kWh]`, using the formula `=MAX('YYYY_MM'!B:B)-MIN('YYYY_MM'!B:B)`), plus one sheet per `YYYY_MM` present in the data (`Zeit der Messung` / `Zählerstand [kWh]` / `Zähleridentifikation`). The output filename is generated from the *first* row's meter id and the covered time range, so if you feed it data mixing more than one meter, only one meter shows up in the filename.
+`meter_reading2consumption.py` writes one Excel workbook per run: a `Verbrauch` sheet with one row per month (`Monat` / `Verbrauch [kWh]`, using the formula `=MAX('YYYY_MM'!B:B)-MIN('YYYY_MM'!B:B)`), plus one sheet per `YYYY_MM` present in the data (`Zeit der Messung` / `Zählerstand [kWh]` / `Zähleridentifikation`), a `Summe` total row, and a `Plausibilitätstest` cross-check row. If the data covers more than one meter (e.g. the meter behind your gateway was swapped at some point), it's detected automatically and a **separate, complete workbook is generated per meter** - the output filename encodes which meter and time range each file covers.
 
-`--folder` only scans the **top level** of a directory (not recursive) for files matching `--pattern` (default: any `.csv`).
+`--folder` only scans the **top level** of a directory (not recursive) for files matching `--pattern` (default: any `.csv`), except with `--append-to` (see below), which scans recursively for raw `export_*.csv` files.
+
+### Keeping an existing workbook up to date (`--append-to`)
+
+Instead of regenerating a workbook from scratch every time, `--append-to` merges newer (or backfilled) readings into an existing one in place:
+
+```bash
+python3 meter_reading2consumption.py \
+    --append-to workbook.xlsx \
+    --folder /path/to/raw-exports \
+    --divisor 10000 \
+    --add-gaps
+```
+
+- `--folder` here points at a directory of the gateway's *raw* `export_*.csv`/`.json`/`.xml` files (as produced by `read_SMGW.py`/`smgw2influx.sh`), not the normalized CSV `meter_reading2consumption.py` otherwise expects.
+- The merge is dedup-safe: existing rows are left alone, only genuinely new timestamps are added, so it's fine to point `--folder` at a directory with overlapping or re-exported data, or to run the same command repeatedly (e.g. from cron).
+- The meter id is auto-detected per file from its `.json`/`.xml` sibling; `--meter` overrides this if a folder has no siblings.
+- `--add-gaps` rescans every month sheet from scratch on each run (not just the months this run touched) and rewrites the `Lücken (keine Daten vom SMGW)` block, so a gap in an older month is removed once a later backfill closes it.
+
+See `scripts/crontab.example` for a full nightly-cron setup built around `--append-to`, including log rotation (`scripts/logrotate-append-excel.conf.example`) and raw-export archiving (below) - written to keep working correctly even after the cron host has been down for a while.
+
+### Archiving raw exports
+
+Two scripts keep the raw `export_*.csv`/`.json`/`.xml` files from piling up indefinitely, without ever deleting data that `--append-to` might still need:
+
+- `scripts/daily-tar.sh` tars up a day's raw export files at a time; safe to re-run (skips any day already archived), and accepts a lookback window so a multi-day host outage doesn't leave days permanently unarchived.
+- `scripts/monthly-assemble.sh` concatenates a month's daily tars into one compressed monthly archive; likewise safe to re-run and supports a lookback window for the same reason.
+
+Both are wired into `scripts/crontab.example` alongside the `--append-to` job above.
 
 ## Additional scripts
 
@@ -117,7 +145,9 @@ Two things to know:
 
 ### Adding a gaps overview to the `Verbrauch` sheet
 
-`generate_excel/add_gaps_to_verbrauch.py` inserts a "Lücken" (gaps) block — Start / Ende / Dauer columns, with a live `=Ende-Start` duration formula — into an existing workbook's `Verbrauch` sheet, using `generate_excel/gap_detector.py` for the actual gap detection:
+`meter_reading2consumption.py --add-gaps` inserts a "Lücken (keine Daten vom SMGW)" block — Start / Ende / Dauer columns, with a live `=Ende-Start` duration formula — into the `Verbrauch` sheet, for gaps over 20 minutes. This is the current, maintained way to get a gaps overview; see the `--append-to` section above for the common case of refreshing it on an existing workbook.
+
+`generate_excel/add_gaps_to_verbrauch.py` (using `generate_excel/gap_detector.py`) is the original standalone version of the same functionality, kept around for one-off use against a workbook you don't otherwise want to touch with `meter_reading2consumption.py`:
 
 ```bash
 python3 generate_excel/add_gaps_to_verbrauch.py \
@@ -145,6 +175,7 @@ There are some useful Python scripts for processing the data, such as calculatin
 
 There is separate documentation for each of the different topics:
 - [Using the PPC Smart Meter Gateway](docs/Using_the_PPC_Smart_Meter_Gateway.md)
+- [The SMGW `status` field: format and meaning](docs/smgw-status-field.md)
 
 To write readings from the gateway directly into an InfluxDB v2 bucket, see `scripts/smgw2influx.sh`. To cross-check a local CSV export against what ended up in InfluxDB — useful for telling real device-side data loss apart from a pipeline-specific gap — see `scripts/compare_influxdb_gaps.py` and `scripts/compare_influxdb_values.py`.
 

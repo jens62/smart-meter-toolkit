@@ -212,3 +212,51 @@ scheduled run is simply missed because the box was down:
       skipping any already assembled. Cron line now passes
       `--lookback-months 3`, so missing day 2 for a given month no longer
       means that month is silently never assembled.
+
+## 9. Surface the raw exports' `status` field instead of discarding it
+
+Investigated (2026-07-14) whether switching from the raw CSV exports to
+their sibling XML files would give access to an "error flag" the meter/
+gateway reports. It wouldn't: the XML's `<ns2:status><ns2:unsigned>`
+element carries the exact same value as the CSV's own `status` column
+(schema-1: column 6; schema-2: column 5) - XML has no extra information
+here, and is meaningfully more expensive to parse at scale (nested XML per
+file vs. flat `awk`-friendly CSV, across tens of thousands of files).
+`normalize_meter_csv.awk` currently discards this column entirely in both
+schemas.
+
+Across the full historical dataset (~370k readings), the overwhelming
+majority are `status=0`; a non-zero value, `status=3`, occurs 126 times
+(0.03%). Cross-checked all 31 distinct `status=3` timestamps against the
+current EMH00 workbook's 11 known gaps (±30min tolerance on either
+boundary): only 3/11 gaps (27%) have a `status=3` reading nearby, and 28
+of the 31 `status=3` occurrences don't correspond to any currently-known
+>20min gap at all. Conclusion: it's a real signal (the meter/gateway
+does occasionally flag a reading as suspect) but neither comprehensive
+(misses most real gaps) nor gap-exclusive (mostly flags brief blips that
+never became a full gap) - not a substitute for the existing
+timestamp-based gap detection, but a useful supplementary signal.
+
+- [ ] Extend `normalize_meter_csv.awk` to emit `status` as a 4th output
+      column (currently `_time;_value;_measurement` only) for both
+      schema 1 and schema 2
+- [ ] Thread it through as an optional per-reading annotation - e.g. a
+      "Status" column on month sheets, populated only for non-zero values
+- [ ] Add a separate "Auffällige Messungen" (flagged readings) block to
+      the `Verbrauch` sheet listing every `status != 0` reading and its
+      value - kept independent from the existing `Lücken` block, since
+      that's a different, already-reliable mechanism (don't dilute it by
+      merging in a signal that's known to be incomplete on its own)
+
+### What the `status` value actually means (found 2026-07-14)
+
+Full writeup, including a bit table and sources, in
+[`docs/smgw-status-field.md`](docs/smgw-status-field.md). Short version:
+the `.cms`/`.xml` exports are the DKE K461/BSI TR-03109 standardized
+SMGW format (not vendor-proprietary), and BSI TR-03109-1
+"Detailspezifikation" v2.0, Chapter 15 ("Messwertstatus") defines the
+bit meanings for exactly this attribute. Our observed values (0, 3)
+are consistent with bit 1, `SMGW_ValueNotValidated` ("reading not yet
+validated for billing") - a plausible, well-documented match for the
+empirical finding above, though not certain to the bit (see the doc
+for caveats).
