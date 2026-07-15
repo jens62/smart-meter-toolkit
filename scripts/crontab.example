@@ -15,8 +15,18 @@
 # to InfluxDB. 14 minutes (not 15) is intentional: it overlaps the meter's
 # own 15-minute reading interval so that a single missed run can't create a
 # gap in the data.
+#
+# --out-path is not optional despite smgw2influx.sh's own --help listing it
+# under "options": without it, the script silently falls back to a mktemp -d
+# scratch directory that gets deleted (via an EXIT trap) as soon as the run
+# finishes - the InfluxDB write still succeeds, so this fails completely
+# silently, but every raw export file this run would have written into
+# data/ is gone before the next job (gap_backfill.py, the merge job,
+# daily-tar.sh) ever sees it. Found this the hard way after cutting over
+# from a hardcoded predecessor that had --path baked in.
 */14 * * * * . ~/.config/smgw-pipeline.env && /path/to/smart-meter-toolkit/scripts/smgw2influx.sh \
   --user "$SMGW_USER" --meter "$SMGW_METER" --host "$SMGW_HOST" \
+  --out-path "$SMGW_BASE_DIR" \
   --influx-url "$INFLUXDB_URL" --influx-org "$INFLUXDB_ORG" --influx-bucket "$INFLUXDB_BUCKET" \
   --measurement "$INFLUXDB_MEASUREMENT" \
   > /dev/null 2>&1
