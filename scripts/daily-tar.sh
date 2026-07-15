@@ -11,6 +11,20 @@
 
 set -euo pipefail
 
+log() {
+  printf '%s [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$$" "$*" >&2
+}
+
+# Logged unconditionally (not just under --debug) since a run that never
+# gets this far - or never appears in the log at all - is itself the most
+# useful signal when a cron-triggered run silently produces nothing: see
+# TODO.md item 11 (2026-07-15), where a run left no trace either way
+# because this cron line had no log redirection and the script logged
+# nothing on its own.
+log "start: pid=$$ args=($*)"
+trap 'log "exiting with code $? (line $LINENO, last command: $BASH_COMMAND)"' EXIT
+trap 'log "ERROR at line $LINENO (exit code $?): $BASH_COMMAND"' ERR
+
 usage() {
   cat <<EOF
 Usage: $(basename "$0") [START_DATE] [options]
@@ -28,6 +42,9 @@ Options:
                          (default: archives/daily)
   --tmp-dir PATH         Scratch directory for building a tar before an atomic
                          move into place (default: \$TMPDIR or /tmp)
+  --debug                Enable full command tracing (set -x) to stderr, on
+                         top of the normal log() lines - noisy, use when the
+                         normal log lines aren't enough to diagnose something
   -h, --help             Show this help and exit
 EOF
 }
@@ -37,6 +54,7 @@ DATA_DIR="data"
 DAILY_DIR="archives/daily"
 TMP_DIR="${TMPDIR:-/tmp}"
 START_DATE="${START_DATE:-}"
+DEBUG=0
 
 if [[ $# -gt 0 && "$1" != --* ]]; then
   START_DATE="$1"
@@ -49,10 +67,15 @@ while [[ $# -gt 0 ]]; do
     --data-dir) DATA_DIR="$2"; shift 2 ;;
     --daily-dir) DAILY_DIR="$2"; shift 2 ;;
     --tmp-dir) TMP_DIR="$2"; shift 2 ;;
+    --debug) DEBUG=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
   esac
 done
+
+if [[ "$DEBUG" -eq 1 ]]; then
+  set -x
+fi
 
 if [[ -z "$START_DATE" ]]; then
   START_DATE="$(date -d 'yesterday' +%Y-%m-%d)"
@@ -63,6 +86,8 @@ if ! date -d "$START_DATE" >/dev/null 2>&1; then
   echo "Invalid START_DATE: $START_DATE" >&2
   exit 2
 fi
+
+log "resolved: base=$BASE data-dir=$DATA_DIR daily-dir=$DAILY_DIR tmp-dir=$TMP_DIR start=$START_DATE end=$END_DATE pwd-before-cd=$(pwd) whoami=$(whoami) path=$PATH"
 
 mkdir -p "$BASE/$DAILY_DIR"
 cd "$BASE"
@@ -76,18 +101,20 @@ while [[ "$(date -d "$current" +%Y-%m-%d)" != "$(date -d "$END_DATE + 1 day" +%Y
   final_tar="$BASE/$DAILY_DIR/data-${day_label}.tar"
 
   if [[ -f "$final_tar" ]]; then
-    echo "Skipping $day_label (archive exists)"
+    log "Skipping $day_label (archive exists)"
     current="$(date -d "$current + 1 day" +%Y-%m-%d)"
     continue
   fi
 
-  echo "Archiving day $day_label ..."
+  log "Archiving day $day_label ..."
 
   mapfile -t files < <(find "$DATA_DIR" -type f \( -name 'export_*.csv' -o -name 'export_*.json' -o -name 'export_*.xml' -o -name 'export_*.cms' \) \
     -newermt "${current} 00:00:00" ! -newermt "${next_day} 00:00:00" -print)
 
+  log "  found ${#files[@]} file(s) for $day_label"
+
   if [[ ${#files[@]} -eq 0 ]]; then
-    echo "  No files for $day_label"
+    log "  No files for $day_label"
     current="$(date -d "$current + 1 day" +%Y-%m-%d)"
     continue
   fi
@@ -101,9 +128,9 @@ while [[ "$(date -d "$current" +%Y-%m-%d)" != "$(date -d "$END_DATE + 1 day" +%Y
   rm -f "$filelist"
 
   mv "$tmp_tar" "$final_tar"
-  echo "  Created $final_tar"
+  log "  Created $final_tar"
 
   current="$(date -d "$current + 1 day" +%Y-%m-%d)"
 done
 
-echo "Done: processed $START_DATE .. $END_DATE"
+log "Done: processed $START_DATE .. $END_DATE"

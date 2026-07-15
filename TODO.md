@@ -338,11 +338,16 @@ Not urgent on its own - the 14-day lookback means a single missed night
 self-corrects within two weeks regardless - but worth tracking since the
 cause is genuinely unknown, not just unfixed.
 
-- [ ] Add log redirection to `daily-tar.sh`'s and `monthly-assemble.sh`'s
-      cron lines (`>> "$SMGW_LOG_DIR"/daily-tar.log 2>&1` /
-      `monthly-assemble.log`, matching the other jobs) so a repeat is
-      actually visible instead of needing `journalctl`/manual
-      reproduction to notice
+- [x] Add log redirection to `daily-tar.sh`'s and `monthly-assemble.sh`'s
+      cron lines (resolved 2026-07-15: both now source
+      `smgw-pipeline.env` and redirect to `daily-tar.log`/
+      `monthly-assemble.log`, matching the other jobs). Also added
+      timestamped `log()` lines throughout `daily-tar.sh` itself (start,
+      resolved args/paths, per-day file counts, an `ERR` trap logging the
+      failing line/command, and an `EXIT` trap logging the final exit
+      code) plus an optional `--debug` flag for full `set -x` tracing -
+      previously a silent failure like this one left literally no trace
+      anywhere to diagnose from.
 - [ ] Watch the next few nights to see if this recurs; if it does,
       narrow down whether it's specific to `daily-tar.sh` or a broader
       "first job to run after a stretch of gateway-querying jobs"
