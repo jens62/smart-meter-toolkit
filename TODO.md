@@ -312,3 +312,38 @@ longer reads either one.
 - [ ] Once both are done, drop `SMGW_METER` and `SMGW_WORKBOOK_PREFIX`
       from `scripts/smgw-pipeline.env.example` and the real
       `~/.config/smgw-pipeline.env` on `ubuntu24-studio`
+
+## 11. `daily-tar.sh`'s cron run silently skipped a day, no reproducible cause found
+
+First night the reworked pipeline ran fully unattended (2026-07-14 into
+2026-07-15). `gap_backfill.py` (01:35) and the merge job (01:50) both ran
+correctly per their logs. `daily-tar.sh` (02:10) did not: its cron
+session opened and closed within the same logged second (per
+`journalctl -u cron`) - too fast for what it should do (13 skip-checks
+plus one archive+tar) - and `archives/daily/data-2026-07-14.tar` was
+confirmed missing afterward (its mtime only appeared once manually run
+by hand later that morning).
+
+Could not reproduce the failure: running the exact same command
+(`daily-tar.sh "$(date -d '14 days ago' +%Y-%m-%d)" --base-dir
+/home/jens/develop/smgw`) by hand worked correctly, and running it again
+under a stripped-down cron-like environment (`env -i PATH=/usr/bin:/bin
+HOME=/home/jens SHELL=/bin/sh ...`) also worked correctly. No error was
+visible anywhere (this cron line has no log redirection - unlike
+`gap_backfill.py`'s and the merge job's lines, it still uses the
+original pre-`smgw-pipeline.env` style, see item 10), and there's no
+local mail spool to check for a message cron might otherwise have sent.
+
+Not urgent on its own - the 14-day lookback means a single missed night
+self-corrects within two weeks regardless - but worth tracking since the
+cause is genuinely unknown, not just unfixed.
+
+- [ ] Add log redirection to `daily-tar.sh`'s and `monthly-assemble.sh`'s
+      cron lines (`>> "$SMGW_LOG_DIR"/daily-tar.log 2>&1` /
+      `monthly-assemble.log`, matching the other jobs) so a repeat is
+      actually visible instead of needing `journalctl`/manual
+      reproduction to notice
+- [ ] Watch the next few nights to see if this recurs; if it does,
+      narrow down whether it's specific to `daily-tar.sh` or a broader
+      "first job to run after a stretch of gateway-querying jobs"
+      timing issue
