@@ -85,8 +85,9 @@ German legal/local time per BSI TR-03109-1 (see
 `docs/smgw-status-field.md`), so use Europe/Berlin wall-clock, matching
 what the Excel workbook itself stores.
 
-**Chunking gotcha**: `calculate_time_ranges()` (also present, separately,
-in `readSMGW_multipleContractsInRanges.py` on the deployment host) turns
+**Chunking gotcha**: `calculate_time_ranges()` (the same buggy logic was
+also present, separately, in the now-retired
+`readSMGW_multipleContractsInRanges.py` - see below) turns
 `--interval`/`--max` into a *minimum chunk size in whole days*, clamped
 to at least 1 day - it does **not** cap the total number of requests.
 `--from 0 --to now --max 1` (a hint the script's own `--help` gives) does
@@ -110,16 +111,31 @@ sub-window immediately after such a failure and getting a clean success
 again (ruling out general flakiness). Keep probe windows tightly scoped
 to a single question ("does data exist near <date>?"), not wide ranges.
 
-### `readSMGW_multipleContracts.sh` / `readSMGW_multipleContractsInRanges.py` (legacy, deployment host only)
+### `readSMGW_multipleContracts.sh` (legacy, but still actively used)
 
-Older bash/Python scripts living directly on `ubuntu24-studio` (not in
-this repo - they predate it), still used by the deployed
-`smgw2influx.sh` and for manual gateway probing. Same
-`--from`/`--to`/`--past`/`--recording_started` contract as `read_SMGW.py`
-above, including the same chunking behavior in
-`readSMGW_multipleContractsInRanges.py`. Kept here only because they're
-still in active use for manual investigation; not part of this repo's
-maintained script set.
+Older bash gateway reader, predates this repo but *is* tracked in it
+(added 2026-07-11) - `smgw2influx.sh` depends on it directly via
+`--readsmgw-script`. Same `--from`/`--to`/`--past`/`--recording_started`
+contract as `read_SMGW.py` above. Not superseded by anything, unlike its
+Python-side siblings below - still the one the live 14-minute polling
+job actually runs.
+
+### `readSMGW_multipleContractsInRanges.py` (retired 2026-07-15)
+
+A Python gateway reader that used to live alongside the scripts above
+directly on `ubuntu24-studio` (never part of this repo), used for manual
+gateway probing throughout this project's early investigation (the
+retention-boundary bisection, the exhaustive per-gap checks). Confirmed
+2026-07-15 to be fully superseded by `read_SMGW.py`, not just similar:
+every function it has, `read_SMGW.py` also has (under the same or an
+equivalent name), plus several it lacks entirely
+(`get_namespaces`/`list_meters`/`parse_xml_entry`); every line unique to
+it in a full diff was duplicated, less robust XML-parsing logic
+(hardcoded namespace prefixes instead of `get_namespaces()`'s dynamic
+discovery) or a stricter, less graceful `--meter` requirement. Moved to `archives/scripts/` on the deployment host, along with the
+other long-dormant script versions found there (see "Housekeeping"
+below). Use `read_SMGW.py` for any future manual gateway investigation
+instead.
 
 ### `smgw2influx.sh`
 
@@ -139,6 +155,22 @@ legacy `readSMGW_multipleContracts.sh`.
 Scheduled every 14 minutes in `crontab.example` (not 15, so a single
 missed run can't create a gap against the meter's own 15-minute
 interval).
+
+**Deployment history**: `ubuntu24-studio` originally ran an ad-hoc
+hardcoded copy (credentials and InfluxDB target inline, no CLI args at
+all) that predated this script's existence in the repo. Replaced
+2026-07-15 with this actual repo version, wired to
+`~/.config/smgw-pipeline.env` like every other job - same underlying
+reader (`readSMGW_multipleContracts.sh`), just the parameterized wrapper
+instead of the hardcoded one. Verified with a real write before cutover
+and again after, independently confirmed via a Flux query-back. The old
+copy is kept at
+`archives/scripts/smgw2influx.sh.legacy-hardcoded` on the host, not
+deleted. This is a smaller, separate step from `TODO.md` item 10's first
+bullet (discovering meters dynamically via `read_SMGW.py`, replacing
+`readSMGW_multipleContracts.sh` itself) - that part is still open; this
+was just retiring the hardcoded wrapper around the same underlying
+reader.
 
 ## Normalization
 
@@ -462,3 +494,51 @@ Weekly rotation, 8 kept, gzip compressed, for the merge job's log.
 Uses its own state file (not root's `/var/lib/logrotate/status`) so it
 works without root access - run daily via cron and let logrotate itself
 decide whether a week has actually elapsed.
+
+## Housekeeping
+
+### `ubuntu24-studio:/home/jens/develop/smgw/archives/scripts/`
+
+On 2026-07-15, moved 23 long-dormant script files out of the deployment
+host's top-level directory into `archives/scripts/`, to make it clear
+at a glance which scripts there are actually part of the running
+pipeline (the 8 remaining at the top level: `daily-tar.sh`,
+`gap_backfill.py`, `gap_detector.py`, `meter_reading2consumption.py`,
+`monthly-assemble.sh`, `readSMGW_multipleContracts.sh`, `read_SMGW.py`,
+`smgw2influx.sh`) versus historical, unreferenced versions. Verified
+first that nothing (crontab, or any other script) referenced any of
+them before moving.
+
+What moved and why each was dormant, not just old:
+- `readSMGW_multipleContractsInRanges.py` - confirmed superseded by
+  `read_SMGW.py` (see that script's section above)
+- `readSMGW_multipleContracts.py`, `meter_csv2excel.py` - earlier-named
+  predecessors of `readSMGW_multipleContractsInRanges.py` and
+  `meter_reading2consumption.py` respectively, before each was renamed
+  and grew significantly (automatic time-range splitting; `--append-to`/
+  `--add-gaps`)
+- `time_ranges.py` - a standalone prototype for chunking logic that's
+  since been absorbed inline into `calculate_time_ranges()` in the
+  Python readers
+- Every `*V<N>.<N>_ok.py`/`*V<N>.0_...py` file (for
+  `readSMGW_multipleContracts(InRanges)`, `meter_csv2excel`,
+  `gap_detector`) - explicit version history, superseded by the
+  unsuffixed file of the same base name
+- `smgw2influx17h.sh`, `smgw2influx2h.sh`, `smgw2influx48h.sh`,
+  `smgw2influx9h.sh`, `smgw2influx_from_to.sh`, `smgw2influx _raspi.sh` -
+  fixed-time-window forks predating today's parameterized `--past N`
+  design already in the repo's `smgw2influx.sh`
+- `readSMGW_multipleContracts_from_raspi.sh`,
+  `readSMGW_multipleContracts_raspi_tests.sh` - a Raspberry Pi-specific
+  variant and its test harness
+
+None of these were modified in over a year and nothing referenced them
+- confirmed by grepping the crontab and every remaining script for each
+filename before moving anything.
+
+A second, later addition to the same directory: the original
+hardcoded `smgw2influx.sh` (see that script's section above), moved
+aside as `smgw2influx.sh.legacy-hardcoded` when it was replaced by the
+repo version - this one *was* actively referenced (by the live crontab)
+right up until the replacement, unlike everything else in this
+directory.
