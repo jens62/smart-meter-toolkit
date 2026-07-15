@@ -1015,18 +1015,25 @@ def load_raw_export_folder(folder, meter, lo_iso, hi_iso, timezone, divisor, log
         groups = {meter: csv_files}
     else:
         groups = group_files_by_detected_meter(csv_files)
+        if None in groups:
+            raise ValueError(
+                f"{len(groups[None])} export file(s) in {folder} have no .json/.xml sibling to "
+                "detect a meter id from, and no --meter override was given. Pass --meter explicitly "
+                "to label these - there is deliberately no hidden fallback here, since silently "
+                "guessing would mislabel real data under whatever meter happened to be hardcoded."
+            )
         if logger:
             for meter_id, files in groups.items():
-                label = meter_id if meter_id is not None else "(no sibling - awk's built-in default)"
-                logger.info(f"{len(files)} export file(s) detected as meter '{label}'")
+                logger.info(f"{len(files)} export file(s) detected as meter '{meter_id}'")
 
     AWK_BATCH_SIZE = 1500  # stay well under ARG_MAX with thousands of files
     normalized_chunks = []
     with tempfile.TemporaryDirectory(prefix="m2c_fixed_newlines_") as tmp_dir:
         for meter_id, files in groups.items():
-            awk_args = ["awk", "-v", f"lo={lo_iso}", "-v", f"hi={hi_iso}"]
-            if meter_id is not None:
-                awk_args += ["-v", f"meter={meter_id}"]
+            # meter_id is never None here: the explicit-override branch above
+            # only ever produces one non-None key, and the detected-groups
+            # branch already raised if a None-keyed group existed.
+            awk_args = ["awk", "-v", f"lo={lo_iso}", "-v", f"hi={hi_iso}", "-v", f"meter={meter_id}"]
             for i in range(0, len(files), AWK_BATCH_SIZE):
                 batch = files[i:i + AWK_BATCH_SIZE]
                 # Sibling-based meter detection above needs each file's own

@@ -143,8 +143,8 @@ def find_candidate_workbooks(workbook_dir, logger):
     aren't a reliable grouping key on their own: an old, abandoned
     workbook from an earlier pipeline version can use a different naming
     convention for the same meter (found directly on the deployment host -
-    a stale "01005e31803c.1emh0011802881.sm_from_..." workbook for the same
-    meter as the live "1_EMH00_1180_2881_from_..." one, last touched over a
+    a stale "0100aabbccdd.1abc0012345678.sm_from_..." workbook for the same
+    meter as the live "1_ABC00_1234_5678_from_..." one, last touched over a
     year before this was written) - grouping by filename would process
     that meter twice, once per naming convention, instead of once.
 

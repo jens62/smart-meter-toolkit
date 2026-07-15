@@ -4,7 +4,10 @@ BEGIN {
     #   awk -v lo="..." -v hi="..." -v meter="..." -f normalize_meter_csv.awk
     if (lo == "") lo = "2025-03-31T22:00:00Z"
     if (hi == "") hi = "2026-06-30T22:00:00Z"
-    if (meter == "") meter = "01005e31803c.1emh0011802881.sm"
+    # No real fallback here on purpose: meter_reading2consumption.py's
+    # load_raw_export_folder() always passes -v meter=... explicitly when a
+    # value is actually needed (raising its own clear error otherwise,
+    # rather than silently mislabeling schema-2 rows under a stale default).
 }
 FNR == 1 {
     if ($1 == "logical_name") { schema = 1 }

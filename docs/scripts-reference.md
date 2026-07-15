@@ -70,8 +70,8 @@ on a fixed config value - see its own section below.
 **A meter being physically disconnected doesn't reliably remove it from
 this list.** Checked directly on 2026-07-15: `--list-meters` against
 this household's real gateway still returned *both*
-`01005e318002.1itr0310077721.sm` (ITR03, physically swapped out for
-EMH00 back in 2023) *and* `01005e318002.1emh0011802881.sm` (EMH00, the
+`0100aabbccdd.1xyz0098765432.sm` (ITR03, physically swapped out for
+EMH00 back in 2023) *and* `0100aabbccdd.1abc0012345678.sm` (EMH00, the
 one actually connected today). Don't design anything that assumes a
 disconnected meter will eventually stop appearing here - it may not,
 at least not on this gateway/firmware.
@@ -120,22 +120,27 @@ contract as `read_SMGW.py` above. Not superseded by anything, unlike its
 Python-side siblings below - still the one the live 14-minute polling
 job actually runs.
 
-### `readSMGW_multipleContractsInRanges.py` (retired 2026-07-15)
+### `readSMGW_multipleContractsInRanges.py` (retired)
 
-A Python gateway reader that used to live alongside the scripts above
-directly on `ubuntu24-studio` (never part of this repo), used for manual
-gateway probing throughout this project's early investigation (the
-retention-boundary bisection, the exhaustive per-gap checks). Confirmed
-2026-07-15 to be fully superseded by `read_SMGW.py`, not just similar:
-every function it has, `read_SMGW.py` also has (under the same or an
-equivalent name), plus several it lacks entirely
-(`get_namespaces`/`list_meters`/`parse_xml_entry`); every line unique to
-it in a full diff was duplicated, less robust XML-parsing logic
-(hardcoded namespace prefixes instead of `get_namespaces()`'s dynamic
-discovery) or a stricter, less graceful `--meter` requirement. Moved to `archives/scripts/` on the deployment host, along with the
-other long-dormant script versions found there (see "Housekeeping"
-below). Use `read_SMGW.py` for any future manual gateway investigation
-instead.
+A Python gateway reader used for manual gateway probing throughout this
+project's early investigation (the retention-boundary bisection, the
+exhaustive per-gap checks). Already identified as superseded by
+`read_SMGW.py` in an earlier session (see
+`smart_meter_gateway/reading/script/README.md`) - a reference copy is
+kept in the repo at `scripts/archive/readSMGW_multipleContractsInRanges.py`,
+it was never deleted outright. Separately, a live working copy also
+existed directly on `ubuntu24-studio` (not the repo copy, and not
+covered by that earlier session's cleanup); re-confirmed 2026-07-15 that
+it's fully superseded, not just similar - every function it has,
+`read_SMGW.py` also has (under the same or an equivalent name), plus
+several it lacks entirely (`get_namespaces`/`list_meters`/
+`parse_xml_entry`); every line unique to it in a full diff was
+duplicated, less robust XML-parsing logic (hardcoded namespace prefixes
+instead of `get_namespaces()`'s dynamic discovery) or a stricter, less
+graceful `--meter` requirement. That host copy was moved to
+`archives/scripts/` there, along with the other long-dormant script
+versions found (see "Housekeeping" below). Use `read_SMGW.py` for any
+future manual gateway investigation instead.
 
 ### `smgw2influx.sh`
 
@@ -312,7 +317,7 @@ against the real deployment host's actual files, not assumed:
 
 - **String format mismatch between old and new workbooks.** An
   abandoned workbook from an earlier pipeline version (found directly on
-  `ubuntu24-studio`: `01005e31803c.1emh0011802881.sm_from_..._to_2025-04-18...xlsx`,
+  `ubuntu24-studio`: `0100aabbccdd.1abc0012345678.sm_from_..._to_2025-04-18...xlsx`,
   over a year stale) stores its meter id as the *raw* dotted logical
   name, while the live workbook stores `format_measurement()`'s
   formatted form - same physical meter, two different strings. Grouping

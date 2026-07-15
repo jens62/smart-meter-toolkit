@@ -14,10 +14,10 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd -P)
 usage() {
   cat <<EOF
 Usage: $(basename "${BASH_SOURCE[0]}") [-h] --user <user> --password <password>  --meter <meter> --past <past> | {--from <YYYY-MM-DD[ HH:MM:SS]> --to <YYYY-MM-DD[ HH:MM:SS]} [--host <host>] [--path <path>] [--out <csv|json|xml>] [-v] 
- e.g.: $(basename "${BASH_SOURCE[0]}") --user myUser --password myPassword --meter 01005e318002.1emh0011802881.sm --past 60
+ e.g.: $(basename "${BASH_SOURCE[0]}") --user myUser --password myPassword --meter 0100aabbccdd.1abc0012345678.sm --past 60
        or
        # publish result to mqtt server:
-       $(basename "${BASH_SOURCE[0]}") --user myUser --password myPassword --meter 01005e318002.1emh0011802881.sm --past 15 --out json 2>/dev/null | curl -d @- 'mqtt://mqttserver.mylocaldomain.lan/smgw/mySMGW_1'
+       $(basename "${BASH_SOURCE[0]}") --user myUser --password myPassword --meter 0100aabbccdd.1abc0012345678.sm --past 15 --out json 2>/dev/null | curl -d @- 'mqtt://mqttserver.mylocaldomain.lan/smgw/mySMGW_1'
 
 $(basename "${BASH_SOURCE[0]}") exports data from a Smartmeter Gateway using the han interface.
 Thanks to Thomas Müller <tmueller@ivugmbh.de> for pointing me in the right direction.
@@ -407,8 +407,8 @@ USER_AGENT="curl/7.88.1"
 #     <input type="hidden" name="tkn" value="d33858903b17e5d787cfa0921de1678f6c8c55aa2477126de4336026e09fe790">
 #     <input type="hidden" name="action" value="meterprofile">Zähler 
 #     <select name="mid" id="meterform_select_meter" size="1" onchange="this.form.submit();">
-#         <option value="52dc9d18adad336dd8ef97d7b9143a31">01005e318002.1itr0310077721.sm</option>
-#         <option value="41f3a8ed992e8ee9da39a3084a387ac3" selected="">01005e318002.1emh0011802881.sm</option>
+#         <option value="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa">0100aabbccdd.1xyz0098765432.sm</option>
+#         <option value="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" selected="">0100aabbccdd.1abc0012345678.sm</option>
 #     </select>&nbsp;
 #     <input type="button" id="form_meterform_button_zaehlerprofil" value="Zählerprofil" onclick="document.forms['input'].elements['action'].value='showMeterProfile'; document.forms['input'].target='_self'; this.form.submit();">&nbsp;
 #     <input type="button" id="form_meterform_button_zaehlerstand" value="Zählerstand" onclick="document.forms['input'].elements['action'].value='showMeterValuesForm'; document.forms['input'].target='_self'; this.form.submit();"><hr>
@@ -425,7 +425,7 @@ log "$HTML_meterform"
 log ""
 
 MID=$(xmllint --nowarning --html --xpath "string(//form[@id='form_meterform']//select[@name='mid']/option[contains(text(), '"$meter"')]/@value)" - <<< "$HTML_meterform" 2>/dev/null)
-#MID=$(xmllint --nowarning --html --xpath "string(//form[@id='form_meterform']//select[@name='mid']/option[contains(text(), '01005e318002.1emh0011802881.sm')]/@value)" - <<< "$HTML_meterform" 2>/dev/null)
+#MID=$(xmllint --nowarning --html --xpath "string(//form[@id='form_meterform']//select[@name='mid']/option[contains(text(), '0100aabbccdd.1abc0012345678.sm')]/@value)" - <<< "$HTML_meterform" 2>/dev/null)
 [[ -z "${MID}" ]] && die "MID is empty. Got incomplete HTML? Wrong credentials? See $LOG for more information."
 log "MID: $MID"
 log ""

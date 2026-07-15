@@ -21,7 +21,7 @@ Gateway options:
   --host HOST                Gateway IP (default: readSMGW_multipleContracts.sh's own default)
   --user USER                Gateway user (required)
   --password PASSWORD        Gateway password (required; or set SMGW_PASSWORD)
-  --meter METER               Meter logical name, e.g. 01005e318002.1emh0011802881.sm (required)
+  --meter METER               Meter logical name, e.g. 0100aabbccdd.1abc0012345678.sm (required)
   --past MINUTES               How many minutes back to fetch (default: 30)
   --out-path PATH             Working directory for readSMGW_multipleContracts.sh's log/
                               and data/ subfolders (default: a temporary directory,

@@ -9,5 +9,5 @@ meters). The original is kept for reference at
 Usage example:
 ```bash
 # Read out meter readings from the start of recording until now.
-python3 scripts/read_SMGW.py --user myUser --password myPassword --meter 01005e318002.1emh001180xxxx.sm --out-path /home/<user>/smgw --from 0 --to now --log_level DEBUG
+python3 scripts/read_SMGW.py --user myUser --password myPassword --meter 0100aabbccdd.1abc0012345678.sm --out-path /home/<user>/smgw --from 0 --to now --log_level DEBUG
 ```

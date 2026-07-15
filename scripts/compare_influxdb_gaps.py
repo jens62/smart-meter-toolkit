@@ -10,7 +10,7 @@ of the two sources point to a difference in what each pipeline actually captured
 
 Example:
   python3 compare_influxdb_gaps.py \\
-      --csv normalized_1_EMH00_1180_2881_from_2025-03-01_00-00-01_to_2026-06-30_23-45-01.csv \\
+      --csv normalized_1_ABC00_1234_5678_from_2025-03-01_00-00-01_to_2026-06-30_23-45-01.csv \\
       --timestamp _time --delimiter ";" \\
       --influx-url http://192.168.0.194:8086 --org 2a4ad7687e68903b --bucket openhab \\
       --measurement SMGW_EPPC0211923304 \\

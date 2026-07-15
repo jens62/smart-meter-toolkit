@@ -131,7 +131,7 @@ echo "# happy path: two rows, default divisor, no --host"
 reset_mocks
 export FAKE_CSV_OUTPUT=$'id;value;scaler;unit;status;capture_time\n1;66870369;-1;30;0;2024-11-28T10:30:01Z\n2;66868984;-1;30;0;2024-11-28T10:15:01Z\n'
 out=$("$TARGET" \
-  --user testuser --password testpass --meter 01005e318002.1emh0011802881.sm \
+  --user testuser --password testpass --meter 0100aabbccdd.1abc0012345678.sm \
   --readsmgw-script "$FAKE_READSMGW" \
   --influx-url http://influx.example --influx-org myorg --influx-bucket mybucket \
   --influx-token mytoken --measurement SMGW_TEST 2>&1)
@@ -153,7 +153,7 @@ fi
 
 args_content="$(cat "$FAKE_READSMGW_ARGS_FILE" 2>/dev/null || true)"
 assert_contains "happy-path forwards default --past 30" "$args_content" "--past 30"
-assert_contains "happy-path forwards --user/--meter" "$args_content" "--user testuser --password testpass --meter 01005e318002.1emh0011802881.sm"
+assert_contains "happy-path forwards --user/--meter" "$args_content" "--user testuser --password testpass --meter 0100aabbccdd.1abc0012345678.sm"
 assert_not_contains "happy-path omits --host when not given" "$args_content" "--host"
 
 echo "# --host is forwarded when given"
