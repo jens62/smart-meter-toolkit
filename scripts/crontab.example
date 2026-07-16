@@ -40,6 +40,19 @@
 # daily-tar.sh's position below): anything this recovers gets picked up by
 # that same night's merge instead of waiting an extra day.
 #
+# The same ordering has a less obvious flip side on the *detection* end:
+# this job's own gap scan reads whatever the workbook looked like after
+# LAST night's merge, since tonight's merge (01:50) hasn't run yet. So a
+# gap that occurred on day D isn't even visible to this job until the
+# merge that runs the night after D (early morning D+1) - and this job's
+# scan that same night already ran 15 minutes before that merge, so it's
+# still looking at the pre-D workbook. Its first real chance to detect
+# and request day D's gap is therefore the *next* night's run, early
+# morning D+2 - not D+1 - assuming --max-requests-per-run budget isn't
+# already spent on an older backlog (see gap_backfill.py's own retry
+# behavior below for why an unrecoverable older gap can hog that budget
+# for multiple nights instead of freeing it up quickly).
+#
 # --workbook-dir (not a fixed --workbook/--meter pair): discovers every
 # meter the gateway's own meter-select form *currently* reports and
 # matches it against whichever workbook in this directory actually holds

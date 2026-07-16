@@ -36,14 +36,32 @@ guaranteed to happen even after a swap; don't assume it will).
 single-workbook use (e.g. testing) - both must be given, since guessing
 one from the other isn't attempted.
 
+In the normal cron setup (see scripts/crontab.example) this job is
+scheduled *before* the nightly --append-to merge, so anything it
+recovers gets merged the same night instead of waiting an extra day.
+That has a flip side on the detection end, though: this job's own scan
+reads whatever the workbook looked like after the *previous* night's
+merge, since tonight's merge hasn't run yet. A gap on day D therefore
+isn't visible here until the merge that runs the night after D (early
+morning D+1) - and that night's scan already ran 15 minutes before that
+merge. So the earliest this job can actually detect and request day D's
+gap is the *next* night's run, early morning D+2, not D+1 (assuming
+--max-requests-per-run budget isn't already spent on an older backlog).
+
 A gap is retried once per calendar day (state persisted in --state-file,
 so re-running this script multiple times in the same day is a no-op for
-gaps already attempted today - safe for manual testing). After
---max-retries attempts across separate days with the gap still open, it's
-marked "given up" and skipped on every later run, until the day it
-actually disappears from detection (at which point it's dropped from the
-state file as resolved). --max-requests-per-run is a shared budget across
-every workbook processed in one run, not per-workbook.
+gaps already attempted today - safe for manual testing). A successful
+response from the gateway (a real answer, whether or not it actually
+contained the missing reading) ends retries for that gap immediately -
+the gateway never backfills past data, so a second successful query
+can't produce a different answer. Only genuine communication failures
+(timeout, non-zero exit) keep retrying, up to --max-retries attempts
+across separate days, after which the gap is marked "given up" and
+skipped on every later run. Either way, a gap that's since actually been
+recovered (find_gaps() stops detecting it once the merge job picks up
+the recovered reading) is dropped from the state file as resolved next
+run, regardless of retry status. --max-requests-per-run is a shared
+budget across every workbook processed in one run, not per-workbook.
 
 This script never touches any workbook directly - it only writes new raw
 export files into --out-path's data/ subdirectory, the same place
@@ -422,7 +440,20 @@ def process_workbook(workbook_path, meter, args, state, today, budget_remaining,
         queried += 1
         if not ok:
             failed += 1
-        elif csv_path and influx_enabled(args):
+            continue
+        # A successful response is authoritative: the gateway never
+        # backfills past data, so if the missing reading isn't in this
+        # answer, retrying won't produce it later either. Only genuine
+        # communication failures (the `not ok` branch above) should keep
+        # retrying via --max-retries/day-spacing - this gap is done
+        # regardless of whether csv_path actually closed it (if it did,
+        # find_gaps() will stop detecting it once the next merge picks it
+        # up, and the cleanup loop above drops it as resolved; if it
+        # didn't, this stops wasting the shared per-run budget retrying
+        # an unrecoverable gap forever).
+        entry["status"] = "given_up"
+        logger.info(f"{meter}: gap {start} .. {end}: gateway answered, not retrying again")
+        if csv_path and influx_enabled(args):
             influx_written += write_to_influx(csv_path, args, logger)
 
     return queried, failed, influx_written, len(deferred), budget_remaining - len(to_query)
@@ -462,7 +493,9 @@ def main():
 
     parser.add_argument("--state-file", required=True, help="JSON file tracking per-gap retry state")
     parser.add_argument("--max-retries", type=int, default=3,
-                        help="Give up on a gap after this many days of still being open")
+                        help="Give up on a gap after this many days of communication failures in a "
+                             "row; a successful response ends retries immediately regardless of "
+                             "whether it contained the missing reading")
     parser.add_argument("--max-requests-per-run", type=int, default=10,
                         help="Cap gateway requests in one run, shared across every workbook processed "
                              "(be gentle on the gateway); excess eligible gaps are deferred to the "
