@@ -217,7 +217,25 @@ cause is genuinely unknown, not just unfixed.
       code) plus an optional `--debug` flag for full `set -x` tracing -
       previously a silent failure like this one left literally no trace
       anywhere to diagnose from.
-- [ ] Watch the next few nights to see if this recurs; if it does,
+- [x] Watch the next few nights to see if this recurs; if it does,
       narrow down whether it's specific to `daily-tar.sh` or a broader
       "first job to run after a stretch of gateway-querying jobs"
-      timing issue
+      timing issue. Recurred every night through 2026-07-16, root cause
+      found: the cron line embeds `$(date -d '14 days ago' +%Y-%m-%d)`
+      directly in the command field. `crontab(5)` treats an *unescaped*
+      `%` there as a newline - everything after the first `%` (including
+      the rest of the date format, `--base-dir`, and the `>>
+      daily-tar.log` redirect) gets sliced off the command and fed to it
+      as stdin instead. The actual command cron ran was the truncated,
+      syntactically-broken `daily-tar.sh "$(date -d '14 days ago' +`,
+      which errored out in the shell before `daily-tar.sh` itself ever
+      started - hence zero log lines even after item 10 added logging,
+      and a cron-generated error mail every single night (confirmed via
+      `mail.log`, sent successfully to the `MAILTO` address - was there
+      the whole time, just never checked). This is exactly why "the
+      cron session opened and closed within the same logged second" and
+      why hand/`env -i` reproduction attempts above always worked: typing
+      or constructing the command outside of an actual crontab file
+      never goes through cron's own `%`-mangling step. Fixed by escaping
+      as `\%` in `scripts/crontab.example` and in the deployed crontab on
+      `ubuntu24-studio`.

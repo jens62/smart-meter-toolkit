@@ -106,7 +106,13 @@
 # skips any day whose archive exists, so redundantly re-checking the last
 # two weeks every night is cheap and correctly catches up on whatever a
 # multi-day outage would otherwise skip archiving forever.
-10 2 * * * . ~/.config/smgw-pipeline.env && /path/to/smart-meter-toolkit/scripts/daily-tar.sh "$(date -d '14 days ago' +%Y-%m-%d)" \
+# NB: the % in the date format must be escaped as \% here - crontab(5)
+# treats an unescaped % in the command field as a newline (feeding
+# everything after it to the command as stdin), which silently truncates
+# this line and severs the log redirect below. Not an issue inside a
+# script file like daily-tar.sh itself, only when embedded directly in
+# a crontab command.
+10 2 * * * . ~/.config/smgw-pipeline.env && /path/to/smart-meter-toolkit/scripts/daily-tar.sh "$(date -d '14 days ago' +\%Y-\%m-\%d)" \
   --base-dir "$SMGW_BASE_DIR" \
   > "$SMGW_LOG_DIR"/daily-tar.log 2>&1
 
