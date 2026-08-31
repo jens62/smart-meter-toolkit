@@ -21,4 +21,5 @@
   --public-base-url "$REPORT_PUBLIC_BASE_URL" --local-publish-dir "$REPORT_LOCAL_PUBLISH_DIR" \
   --remote-ssh-host "$REPORT_REMOTE_SSH_HOST" --remote-publish-dir "$REPORT_REMOTE_PUBLISH_DIR" \
   --grafana-url "$REPORT_GRAFANA_URL" --meter-description "$REPORT_METER_DESCRIPTION" \
+  --reading-head-description "$REPORT_READING_HEAD_DESCRIPTION" \
   > /dev/null 2>&1

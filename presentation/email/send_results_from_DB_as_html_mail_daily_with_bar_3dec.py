@@ -660,8 +660,11 @@ def parse_args():
     parser.add_argument("--grafana-url", default=None,
                          help="Optional link to a Grafana dashboard, included in the report if set")
     parser.add_argument("--meter-description", default="Stromzähler",
-                         help="Short description of the meter/reading hardware for the report heading "
-                              "(default: 'Stromzähler')")
+                         help="Short description of the meter for the report heading, used as "
+                              "'Daten vom <meter-description>, <meter number>' (default: 'Stromzähler')")
+    parser.add_argument("--reading-head-description", default=None,
+                         help="Optional description of the reading head/gateway hardware, appended as "
+                              "'..., über <reading-head-description>' after the meter number if set")
 
     return parser.parse_args()
 
@@ -699,8 +702,9 @@ def main():
                 f'(Nur im privaten/lokalen Hausnetz verfügbar.)</li>'
             )
 
+        reading_head_suffix = f", über {args.reading_head_description}" if args.reading_head_description else ""
         html += f"""
-        <h2>Daten vom {args.meter_description}, {meter_number}</h2>
+        <h2>Daten vom {args.meter_description}, {meter_number}{reading_head_suffix}</h2>
         <ul>
             <li>Alle „Stromwerte“ sind in <tt>[kWh]</tt> angegeben.</li>
             {grafana_li}
