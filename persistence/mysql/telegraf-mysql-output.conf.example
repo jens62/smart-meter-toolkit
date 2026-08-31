@@ -1,0 +1,23 @@
+# Telegraf output side: writes what inputs.mqtt_consumer collects
+# (../../acquisition/tasmota-ir/telegraf-mqtt-input.conf.example) into
+# MariaDB/MySQL, using telegraf's generic SQL output plugin.
+#
+# Replace every <placeholder> below. Never commit the real DSN/credentials
+# anywhere in this repo - they belong only in telegraf's own config file on
+# the deployment host (not tracked by this repo at all).
+
+[[outputs.sql]]
+  driver = "mysql"
+
+  # user:password@tcp(host:3306)/dbname - the db name here must match the
+  # database schema.sql/procedures.sql/events.sql get loaded into.
+  data_source_name = "<db_user>:<db_password>@tcp(<db_host>:3306)/<db_name>"
+
+  timestamp_column = "time"
+
+  # https://github.com/influxdata/telegraf/blob/master/plugins/outputs/sql/README.md
+  init_sql = "SET sql_mode='ANSI_QUOTES';"
+
+  # Must match name_override in the mqtt_consumer input, and the raw table
+  # name used throughout schema.sql/procedures.sql.
+  # table = "tasmota_METER1_SENSOR"
