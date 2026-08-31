@@ -13,12 +13,12 @@ The Python scripts in the scripts folder may help. The scripts can be copied, an
 
 ## Requirements
 
-The Python scripts need Python 3 plus a few third-party packages: `pandas`, `openpyxl`, `requests`, `beautifulsoup4`. The `presentation/email/` mail report additionally needs `mysql-connector-python` and `plumbum`.
+The Python scripts need Python 3 plus a few third-party packages: `pandas`, `openpyxl`, `requests`, `beautifulsoup4`. The `presentation/email/` mail report additionally needs `mysql-connector-python` and `plumbum`; `presentation/rss/` needs `paho-mqtt`.
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-pip install pandas openpyxl requests beautifulsoup4 mysql-connector-python plumbum
+pip install pandas openpyxl requests beautifulsoup4 mysql-connector-python plumbum paho-mqtt
 ```
 
 On macOS, the system `python3` is usually "externally managed" by Homebrew, which blocks a plain `pip install`. Use a venv as shown above instead of fighting that.
@@ -209,6 +209,8 @@ presentation:
 - [`acquisition/tasmota-ir/`](acquisition/tasmota-ir/README.md) - Tasmota IR head → MQTT → telegraf
 - [`persistence/mysql/`](persistence/mysql/README.md) - schema, rollup procedure/event
 - [`presentation/email/`](presentation/email/README.md) - daily/monthly HTML mail report
+- [`presentation/website/`](presentation/website/README.md) - archive page for past reports
+- [`presentation/rss/`](presentation/rss/README.md) - live RSS/JSON feed of the latest reading
 
 
 
