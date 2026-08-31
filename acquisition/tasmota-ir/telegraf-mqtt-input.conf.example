@@ -1,0 +1,41 @@
+# Telegraf input side for a Tasmota-flashed IR read head (e.g. a "Hichi IR
+# wifi" style device) clipped onto a meter's optical port, reading SML data
+# and publishing it to a local MQTT broker.
+#
+# This is only the [[inputs.mqtt_consumer]] block - copy it into your own
+# telegraf config (or a file under /etc/telegraf/telegraf.d/) alongside
+# whatever [[outputs.*]] you use. See ../../persistence/mysql/ for the
+# matching [[outputs.sql]] block that writes what this input collects into
+# MariaDB/MySQL.
+#
+# Replace every <placeholder> below with your actual values. Never commit
+# the real broker credentials or device id anywhere in this repo.
+
+[[inputs.mqtt_consumer]]
+  servers = ["tcp://<mqtt_broker_host>:1883"]
+  username = "<mqtt_user>"
+  password = "<mqtt_password>"
+
+  # Tasmota's default topic layout is tele/<device-name>/SENSOR. The
+  # trailing /# also picks up retained/sub-topics some firmware versions
+  # publish under the same prefix.
+  topics = ["tele/<device_id>/SENSOR/#"]
+  qos = 2
+  connection_timeout = "30s"
+
+  data_format = "json_v2"
+  # Determines the measurement/table name telegraf writes to downstream -
+  # keep this in sync with the table name used in
+  # ../../persistence/mysql/schema.sql (there: tasmota_<device_id>_SENSOR).
+  name_override = "tasmota_<device_id>_SENSOR"
+
+  # Example raw payload published by the Tasmota device for an SML-speaking
+  # meter (field names depend on your meter's OBIS codes / the Tasmota SML
+  # script driving them):
+  # {"Time":"2025-03-19T08:30:32","SML":{"1_8_0__Bezug_Gesamt":13774.000,"1_8_1__Bezug_HT":8168.000,"1_8_2__Bezug_NT":5606.000,"96_1_0":"<meter id, hex>"}}
+  [[inputs.mqtt_consumer.json_v2]]
+    [[inputs.mqtt_consumer.json_v2.object]]
+      path = "@this"
+      timestamp_key = "Time"
+      timestamp_format = "2006-01-02T15:04:05"
+      timestamp_timezone = "Local"
