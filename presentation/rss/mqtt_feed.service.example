@@ -1,0 +1,18 @@
+[Unit]
+Description=MQTT Feed to RSS/JSON Converter
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /path/to/smart-meter-toolkit/presentation/rss/mqtt_to_rss.py \
+  --topic "tele/<device-id>/SENSOR" \
+  --rss-file /path/to/public_html/mqtt_feed.xml \
+  --json-file /path/to/public_html/mqtt_latest.json
+Restart=always
+User=<user>
+Group=<user>
+WorkingDirectory=/path/to/smart-meter-toolkit/presentation/rss/
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
