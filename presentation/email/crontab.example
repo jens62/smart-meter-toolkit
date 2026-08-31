@@ -1,0 +1,24 @@
+# Example crontab for the Tasmota/MySQL consumption mail report.
+# Copy the line you need into `crontab -e`.
+#
+# Config (DB credentials, email addresses, publish paths) lives in one file
+# instead of being hardcoded here - copy three-phase-meter-mail.env.example
+# to e.g. ~/.config/three-phase-meter-mail.env, fill in the values, then:
+#   chmod 600 ~/.config/three-phase-meter-mail.env
+#
+# cron does not source your shell profile, so the job below sources that
+# file itself before running the script.
+
+# Daily at 07:00: build the report covering hourly (yesterday)/daily (last
+# 14 days)/weekly (last 10 weeks)/monthly/quarterly/yearly consumption,
+# publish it locally + to a webserver, and email it.
+0 7 * * * . ~/.config/three-phase-meter-mail.env && /path/to/python3 /path/to/smart-meter-toolkit/presentation/email/send_results_from_DB_as_html_mail_daily_with_bar_3dec.py \
+  --db-host "$METER_DB_HOST" --db-user "$METER_DB_USER" --db-password "$METER_DB_PASSWORD" \
+  --db-name "$METER_DB_NAME" --device-id "$METER_DEVICE_ID" \
+  --sender-name "$MAIL_SENDER_NAME" --sender-email "$MAIL_SENDER_EMAIL" \
+  --reply-to-name "$MAIL_REPLY_TO_NAME" --reply-to-email "$MAIL_REPLY_TO_EMAIL" \
+  --recipient "$MAIL_RECIPIENT" --cc-recipient "$MAIL_CC_RECIPIENT" \
+  --public-base-url "$REPORT_PUBLIC_BASE_URL" --local-publish-dir "$REPORT_LOCAL_PUBLISH_DIR" \
+  --remote-ssh-host "$REPORT_REMOTE_SSH_HOST" --remote-publish-dir "$REPORT_REMOTE_PUBLISH_DIR" \
+  --grafana-url "$REPORT_GRAFANA_URL" --meter-description "$REPORT_METER_DESCRIPTION" \
+  > /dev/null 2>&1
