@@ -13,12 +13,12 @@ The Python scripts in the scripts folder may help. The scripts can be copied, an
 
 ## Requirements
 
-The Python scripts need Python 3 plus a few third-party packages: `pandas`, `openpyxl`, `requests`, `beautifulsoup4`.
+The Python scripts need Python 3 plus a few third-party packages: `pandas`, `openpyxl`, `requests`, `beautifulsoup4`. The `presentation/email/` mail report additionally needs `mysql-connector-python` and `plumbum`.
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-pip install pandas openpyxl requests beautifulsoup4
+pip install pandas openpyxl requests beautifulsoup4 mysql-connector-python plumbum
 ```
 
 On macOS, the system `python3` is usually "externally managed" by Homebrew, which blocks a plain `pip install`. Use a venv as shown above instead of fighting that.
@@ -198,6 +198,17 @@ There is separate documentation for each of the different topics:
 - [The SMGW `status` field: format and meaning](docs/smgw-status-field.md)
 
 To write readings from the gateway directly into an InfluxDB v2 bucket, see `scripts/smgw2influx.sh`. To cross-check a local CSV export against what ended up in InfluxDB — useful for telling real device-side data loss apart from a pipeline-specific gap — see `scripts/compare_influxdb_gaps.py` and `scripts/compare_influxdb_values.py`.
+
+### A second pipeline: Tasmota IR read head → MySQL/MariaDB → mail report
+
+An independent, self-contained pipeline for households using a Tasmota-flashed
+IR read head instead of a smart meter gateway, storing into MySQL/MariaDB
+instead of InfluxDB, and presenting via a daily mail report instead of Excel.
+Organized by the same three steps as above - acquisition, persistence,
+presentation:
+- [`acquisition/tasmota-ir/`](acquisition/tasmota-ir/README.md) - Tasmota IR head → MQTT → telegraf
+- [`persistence/mysql/`](persistence/mysql/README.md) - schema, rollup procedure/event
+- [`presentation/email/`](presentation/email/README.md) - daily/monthly HTML mail report
 
 
 
