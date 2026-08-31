@@ -1,0 +1,25 @@
+# Example logrotate config for mqtt_to_rss.py's --log-file (only relevant if
+# you actually set --log-file - otherwise there's nothing here to rotate).
+# Copy this to /etc/logrotate.d/, fill in the placeholder path/user, and
+# make sure it matches the --log-file path and the service's User/Group in
+# mqtt_feed.service.example.
+#
+# Daily rotation, 14 rotations kept (~2 weeks), gzip compressed (delayed by
+# one rotation so logrotate doesn't compress a file the service still has
+# open). The postrotate restart is needed because the script opens its log
+# file once at startup (logging.FileHandler) and keeps writing to that
+# inode - without a restart it would keep appending to the now-rotated-away
+# file instead of the fresh one logrotate created.
+/path/to/logs/mqtt_feed.log {
+    daily
+    missingok
+    rotate 14
+    compress
+    delaycompress
+    notifempty
+    create 0640 <user> <user>
+    sharedscripts
+    postrotate
+        systemctl restart mqtt_feed.service > /dev/null 2>&1 || true
+    endscript
+}

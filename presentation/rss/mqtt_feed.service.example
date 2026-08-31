@@ -6,7 +6,8 @@ After=network.target
 ExecStart=/usr/bin/python3 /path/to/smart-meter-toolkit/presentation/rss/mqtt_to_rss.py \
   --topic "tele/<device-id>/SENSOR" \
   --rss-file /path/to/public_html/mqtt_feed.xml \
-  --json-file /path/to/public_html/mqtt_latest.json
+  --json-file /path/to/public_html/mqtt_latest.json \
+  --log-file /path/to/logs/mqtt_feed.log
 Restart=always
 User=<user>
 Group=<user>

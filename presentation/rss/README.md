@@ -23,6 +23,12 @@ run continuously under a service supervisor.
    directory if you want them served over HTTP - they're written with no
    particular permissions handling beyond the process's own umask, so make
    sure the service's `User`/`Group` can write there.
+4. If you set `--log-file` (as the systemd example does), also copy
+   `logrotate-mqtt-feed.conf.example` to `/etc/logrotate.d/`, filling in the
+   same path/user - otherwise that log grows forever. Its `postrotate`
+   restarts the service, which is required: the script opens the log file
+   once via `logging.FileHandler` and would otherwise keep writing to the
+   rotated-away inode.
 
 ## Notes
 
