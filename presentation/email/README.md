@@ -9,10 +9,24 @@ per row. The same HTML is:
 - copied via SSH to a public webserver (`--remote-ssh-host`/`--remote-publish-dir`)
 - emailed to `--recipient` (optionally cc'd)
 
-There's no separate "website" component today - the published HTML file
-*is* the website view, produced by the same script/artifact that gets
-emailed. A link back to "view this in your browser" (pointing at
-`--public-base-url`) gets added to the emailed copy.
+A link back to "view this in your browser" (pointing at `--public-base-url`)
+gets added to the emailed copy - see `../website/` for the archive page
+that link lands on.
+
+## Deployment status
+
+Live on `raspi4-8GB-Jag` since 2026-08-31, replacing the hardcoded
+predecessor at the same cron slot (`0 7 * * *`). Config lives in
+`~/.config/three-phase-meter-mail.env` on that host - not in this repo, and
+not reconstructable from it. The pre-refactor script and crontab are backed
+up on the host itself, in `/home/jens/homeautomation/mail/`:
+
+- `send_results_from_DB_as_html_mail_daily_with_bar_3dec (31.08.26, backup-pre-config-refactor).py`
+- `crontab.bak_2026-08-31.txt`
+
+Rollback: comment out the new crontab line and uncomment the old one (kept
+directly above it in the live crontab), or restore from the backup files
+above.
 
 ## Setup
 
