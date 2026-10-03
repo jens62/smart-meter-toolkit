@@ -58,11 +58,52 @@ month/quarter/year boundary rollup would do without waiting for it:
 CALL proc_calculate_consumption_all_rates_debug();
 ```
 
-## Known quirk
+## Stub rows and lost periods (fixed)
 
-`proc_calculate_consumption_all_rates` occasionally writes a near-zero
-"stub" row for a period that has barely started (see the comment at the top
-of `procedures.sql`). It's most visible for monthly/weekly/quarterly/yearly
-rollups, since it can sit there for a whole period before self-correcting.
-Anything reading these tables for a report should exclude the still-open
-current period rather than assume every row is a completed one.
+Earlier versions of `proc_calculate_consumption_all_rates` could write a
+near-zero "stub" row (consumption 0.001, dated the first seconds of the new
+period) at a period boundary - for the monthly table e.g. `01.06 - 01.06`
+instead of `01.06 - 30.06` in a report. This was documented as harmless and
+"self-correcting". **It is not:** the stub becomes the table's cursor, and at
+the next boundary the period that just ended has no predecessor in the
+window, so it is dropped. Every stub therefore costs one lost period (a
+missing month in the monthly table, a missing week in the weekly table, ...).
+Details are in the comment at the top of `procedures.sql`.
+
+Fixed by only counting readings **before** the start of the currently open
+period. `procedures.sql` now contains `proc_calculate_consumption_all_rates_at(p_now)`
+(the logic, callable for any moment) and `proc_calculate_consumption_all_rates()`
+(calls it with `NOW()`, used by the event).
+
+### Upgrading an installation that already has stub rows
+
+1. Back up the rollup tables (`mysqldump`).
+2. Reload `procedures.sql` (and `procedures_debug.sql`).
+3. Find the stubs: rows whose `time` is within the first minute of a period and
+   whose consumption is ~0.001, e.g. for the monthly table
+   `SELECT * FROM tasmota_METER1_SENSOR_CONSUMPTION_monthly WHERE DAY(time) = 1 AND TIME(time) < '00:01:00';`
+   (weekly: `WEEKDAY(time) = 0`; quarterly/yearly accordingly).
+4. For each table, delete all rows from the first stub on (the lost periods
+   after it are rebuilt from the raw readings) and let the procedure recompute
+   them for a moment at which the periods are due and completed, e.g. monthly and quarterly:
+
+   ```sql
+   DELETE FROM tasmota_METER1_SENSOR_CONSUMPTION_monthly WHERE time >= '<first stub day> 00:00:00';
+   CALL proc_calculate_consumption_all_rates_at('<first day of the current month> 00:00:00');
+   ```
+
+   For the weekly table use a Monday 00:00:00 as the moment. Rows before the
+   first stub stay untouched. Check the result against a report or the raw
+   readings before dropping your backup.
+
+Use `CALL proc_calculate_consumption_all_rates_debug_at('<moment>');` first to see
+which periods would be processed and with which boundary.
+
+## Known limitation
+
+The last reading of a period is only picked up if it is already in the raw
+table when the procedure runs. With Telegraf's flush interval a reading from
+the last seconds before midnight can arrive after the run, then the period
+uses the reading before it (difference of one reading, typically about 0.001 kWh,
+balanced by the following period). Starting the event a few seconds after the
+full hour (e.g. `STARTS` at `hh:00:30`) avoids that.
