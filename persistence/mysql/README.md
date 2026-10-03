@@ -139,12 +139,3 @@ period. `procedures.sql` now contains `proc_calculate_consumption_all_rates_at(p
 
 Use `CALL proc_calculate_consumption_all_rates_debug_at('<moment>');` first to see
 which periods would be processed and with which boundary.
-
-## Known limitation
-
-The last reading of a period is only picked up if it is already in the raw
-table when the procedure runs. With Telegraf's flush interval a reading from
-the last seconds before midnight can arrive after the run, then the period
-uses the reading before it (difference of one reading, typically about 0.001 kWh,
-balanced by the following period). Starting the event a few seconds after the
-full hour (e.g. `STARTS` at `hh:00:30`) avoids that.
