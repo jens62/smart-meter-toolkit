@@ -32,10 +32,19 @@
   # Example raw payload published by the Tasmota device for an SML-speaking
   # meter (field names depend on your meter's OBIS codes / the Tasmota SML
   # script driving them):
+  # (With `SetOption52 1` on the device, "Time" carries the UTC offset, e.g.
+  # "2025-03-19T08:30:32+01:00" - see "Unambiguous times" in README.md.)
   # {"Time":"2025-03-19T08:30:32","SML":{"1_8_0__Bezug_Gesamt":13774.000,"1_8_1__Bezug_HT":8168.000,"1_8_2__Bezug_NT":5606.000,"96_1_0":"<meter id, hex>"}}
   [[inputs.mqtt_consumer.json_v2]]
     [[inputs.mqtt_consumer.json_v2.object]]
       path = "@this"
       timestamp_key = "Time"
-      timestamp_format = "2006-01-02T15:04:05"
-      timestamp_timezone = "Local"
+      # Recommended: run `SetOption52 1` on the Tasmota device (once, it is
+      # persistent) so "Time" includes the UTC offset. This keeps the repeated
+      # hour at the end of daylight saving time unambiguous.
+      timestamp_format = "2006-01-02T15:04:05Z07:00"
+
+      # Without SetOption52 (device sends local time without offset), use this
+      # instead. The hour 02:00-02:59 on the day DST ends is then ambiguous.
+      # timestamp_format = "2006-01-02T15:04:05"
+      # timestamp_timezone = "Local"

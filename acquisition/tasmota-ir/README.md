@@ -16,13 +16,34 @@ meter (optical/IR port, SML protocol)
   -> MariaDB/MySQL                  (../../persistence/mysql/)
 ```
 
+## Unambiguous times (daylight saving time)
+
+By default Tasmota publishes `"Time"` as local time without an offset
+(`2025-10-26T02:30:00`). When daylight saving time ends, the hour 02:00-02:59
+occurs twice and both halves yield the same timestamp, so readings with two
+different meter values share one `time` (and a `UNIQUE` index on `time` would
+block the SQL output).
+
+Fix: send `SetOption52 1` once on the device console (or
+`http://<device>/cm?cmnd=SetOption52%201`). It is stored persistently and
+appends the offset: `"Time":"2025-10-26T02:30:00+01:00"`. The example input
+config then parses it with `timestamp_format = "2006-01-02T15:04:05Z07:00"`
+(no `timestamp_timezone`).
+
+Device and telegraf config must be switched together: a config expecting an
+offset discards messages without one (and vice versa) with a parse error; it
+does not store wrong times. Stop telegraf, change the config, set the option,
+start telegraf. Roll back with `SetOption52 0` and the old format. Everything
+else reading the raw `Time` field (other MQTT clients) has to cope with the
+offset as well.
+
 ## What's not included here
 
 The Tasmota device's own configuration (its SML-parsing rule/script and MQTT
 publish settings, set via the Tasmota web console or `Backlog` commands) is
 device firmware config, not something reachable from the host running
 telegraf - it isn't captured here. If you want it documented, export it from
-the device's console (`Rule1`/`Rule2`/`Rule3` and the relevant `SetOption`s)
+the device's console (`Rule1`/`Rule2`/`Rule3` and the relevant `SetOption`s, e.g. `SetOption52`)
 and add it as a file in this folder.
 
 ## Setup
