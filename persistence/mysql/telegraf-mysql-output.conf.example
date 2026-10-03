@@ -18,6 +18,11 @@
   # https://github.com/influxdata/telegraf/blob/master/plugins/outputs/sql/README.md
   init_sql = "SET sql_mode='ANSI_QUOTES';"
 
+  # Time is written as UTC into a DATETIME column (no session time zone conversion).
+  # Only relevant if telegraf creates the table itself; schema.sql already defines it.
+  # [outputs.sql.convert]
+  #   timestamp = "DATETIME"
+
   # Must match name_override in the mqtt_consumer input, and the raw table
   # name used throughout schema.sql/procedures.sql.
   # table = "tasmota_METER1_SENSOR"

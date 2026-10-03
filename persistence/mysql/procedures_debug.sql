@@ -33,7 +33,8 @@ BEGIN
 
     
     CREATE TABLE IF NOT EXISTS tasmota_METER1_SENSOR_CONSUMPTION_hourly (
-        time TIMESTAMP NOT NULL,
+        time DATETIME NOT NULL,
+        time_utc DATETIME,
         SML_1_8_0__Bezug_Gesamt DOUBLE,
         SML_1_8_1__Bezug_HT DOUBLE,
         SML_1_8_2__Bezug_NT DOUBLE,
@@ -44,7 +45,8 @@ BEGIN
     );
 
     CREATE TABLE IF NOT EXISTS tasmota_METER1_SENSOR_CONSUMPTION_daily (
-        time TIMESTAMP NOT NULL,
+        time DATETIME NOT NULL,
+        time_utc DATETIME,
         SML_1_8_0__Bezug_Gesamt DOUBLE,
         SML_1_8_1__Bezug_HT DOUBLE,
         SML_1_8_2__Bezug_NT DOUBLE,
@@ -55,7 +57,8 @@ BEGIN
     );
 
     CREATE TABLE IF NOT EXISTS tasmota_METER1_SENSOR_CONSUMPTION_weekly (
-        time TIMESTAMP NOT NULL,
+        time DATETIME NOT NULL,
+        time_utc DATETIME,
         SML_1_8_0__Bezug_Gesamt DOUBLE,
         SML_1_8_1__Bezug_HT DOUBLE,
         SML_1_8_2__Bezug_NT DOUBLE,
@@ -66,7 +69,8 @@ BEGIN
     );
 
     CREATE TABLE IF NOT EXISTS tasmota_METER1_SENSOR_CONSUMPTION_monthly (
-        time TIMESTAMP NOT NULL,
+        time DATETIME NOT NULL,
+        time_utc DATETIME,
         SML_1_8_0__Bezug_Gesamt DOUBLE,
         SML_1_8_1__Bezug_HT DOUBLE,
         SML_1_8_2__Bezug_NT DOUBLE,
@@ -77,7 +81,8 @@ BEGIN
     );
 
     CREATE TABLE IF NOT EXISTS tasmota_METER1_SENSOR_CONSUMPTION_quarterly (
-        time TIMESTAMP NOT NULL,
+        time DATETIME NOT NULL,
+        time_utc DATETIME,
         SML_1_8_0__Bezug_Gesamt DOUBLE,
         SML_1_8_1__Bezug_HT DOUBLE,
         SML_1_8_2__Bezug_NT DOUBLE,
@@ -88,7 +93,8 @@ BEGIN
     );
 
     CREATE TABLE IF NOT EXISTS tasmota_METER1_SENSOR_CONSUMPTION_yearly (
-        time TIMESTAMP NOT NULL,
+        time DATETIME NOT NULL,
+        time_utc DATETIME,
         SML_1_8_0__Bezug_Gesamt DOUBLE,
         SML_1_8_1__Bezug_HT DOUBLE,
         SML_1_8_2__Bezug_NT DOUBLE,
@@ -161,10 +167,11 @@ BEGIN
         
         SET insert_query = CONCAT(
             '\n',
-            'REPLACE INTO ', v_tableName, ' (time, SML_1_8_0__Bezug_Gesamt, SML_1_8_1__Bezug_HT, SML_1_8_2__Bezug_NT, power_consumption_total, power_consumption_HT, power_consumption_NT) \n',
+            'REPLACE INTO ', v_tableName, ' (time, time_utc, SML_1_8_0__Bezug_Gesamt, SML_1_8_1__Bezug_HT, SML_1_8_2__Bezug_NT, power_consumption_total, power_consumption_HT, power_consumption_NT) \n',
             'WITH consumption AS ( \n',
             '    SELECT \n',
             '        local_time, \n',
+            '        reading_utc, \n',
             '        SML_1_8_0__Bezug_Gesamt, \n',
             '        SML_1_8_1__Bezug_HT, \n',
             '        SML_1_8_2__Bezug_NT, \n',
@@ -176,6 +183,7 @@ BEGIN
             '            WITH ranked_data AS ( \n',
             '                SELECT \n',
             '                    berlin_time AS local_time, \n',
+            '                    time AS reading_utc, \n',
             '                    SML_1_8_0__Bezug_Gesamt, \n',
             '                    SML_1_8_1__Bezug_HT, \n',
             '                    SML_1_8_2__Bezug_NT, \n',

@@ -58,6 +58,47 @@ month/quarter/year boundary rollup would do without waiting for it:
 CALL proc_calculate_consumption_all_rates_debug();
 ```
 
+## Time zones
+
+- The raw table stores `time` as **UTC** in a `DATETIME` column (not `TIMESTAMP`: a
+  `TIMESTAMP` is converted with the session time zone on every write and read, which loses
+  or distorts values around the daylight-saving changes). Telegraf sends UTC; nothing in
+  the database converts it.
+- `berlin_time` (generated column) is the local Berlin wall clock of the same reading. It is
+  not unique: in the repeated hour in autumn the same local time occurs twice. `time` is a plain
+  index, not `UNIQUE`, for the same reason.
+- The six rollup tables keep `time` = **local Berlin time** of the last reading of the period (primary
+  key, what reports like `presentation/email` use) and have `time_utc` = the **UTC time of the
+  same reading**. `time_utc` is unambiguous (also in the repeated autumn hour) and is what a
+  dashboard in UTC should plot and filter on.
+- Grafana: one MySQL data source with the time zone **UTC**. Plot/filter raw data on `time`
+  and rollup tables on `time_utc`, e.g. `SELECT time_utc AS time, power_consumption_total
+  FROM ..._hourly WHERE $__timeFilter(time_utc)`. Do not put expressions such as
+  `CONVERT_TZ(...)` inside `$__timeFilter()` (the macro does not parse them); write the
+  `BETWEEN FROM_UNIXTIME($__unixEpochFrom()) AND FROM_UNIXTIME($__unixEpochTo())` filter out.
+- Telegraf: `[outputs.sql.convert] timestamp = "DATETIME"` (see `telegraf-mysql-output.conf.example`).
+
+### Upgrading an existing installation (TIMESTAMP columns, no `time_utc`)
+
+Do this with a backup and while telegraf keeps running into a copy, e.g. create the new raw table,
+copy the history, check it (row counts and a checksum per month), then swap the names with a
+single `RENAME TABLE`. Read `time` as UTC wall clock when converting: do the conversion in a session
+whose time zone is the one that was used when the rows were written. For the rollup tables:
+
+```sql
+ALTER TABLE tasmota_METER1_SENSOR_CONSUMPTION_hourly MODIFY time DATETIME NOT NULL;   -- same for the others
+ALTER TABLE tasmota_METER1_SENSOR_CONSUMPTION_hourly ADD COLUMN time_utc DATETIME NULL AFTER time,
+                                                     ADD KEY idx_time_utc (time_utc);
+UPDATE tasmota_METER1_SENSOR_CONSUMPTION_hourly c JOIN tasmota_METER1_SENSOR r
+   ON r.berlin_time = c.time AND r.SML_1_8_0__Bezug_Gesamt <=> c.SML_1_8_0__Bezug_Gesamt
+   SET c.time_utc = r.time;                                                           -- same for the others
+-- rows without a matching raw reading (very old data): unambiguous conversion from the label
+UPDATE tasmota_METER1_SENSOR_CONSUMPTION_hourly SET time_utc = CONVERT_TZ(time, 'Europe/Berlin', 'UTC') WHERE time_utc IS NULL;
+```
+
+Then reload `procedures.sql` (it fills `time_utc` for new rows) and check that
+`CONVERT_TZ(time_utc, 'UTC', 'Europe/Berlin') = time` holds for every row.
+
 ## Stub rows and lost periods (fixed)
 
 Earlier versions of `proc_calculate_consumption_all_rates` could write a
