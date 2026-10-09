@@ -20,7 +20,9 @@ See `../../acquisition/tasmota-ir/` for how readings get here, and
    FLUSH PRIVILEGES;
    ```
 
-2. Load the schema, procedure, and event, in this order:
+2. Make sure the server's time zone tables are loaded (otherwise `CONVERT_TZ` returns
+   `NULL`; see [Time zones](#time-zone-tables-must-be-loaded-convert_tz-returns-null)), then
+   load the schema, procedure, and event, in this order:
 
    ```bash
    mysql -u <db_user> -p <db_name> < schema.sql
@@ -77,6 +79,27 @@ CALL proc_calculate_consumption_all_rates_debug();
   `CONVERT_TZ(...)` inside `$__timeFilter()` (the macro does not parse them); write the
   `BETWEEN FROM_UNIXTIME($__unixEpochFrom()) AND FROM_UNIXTIME($__unixEpochTo())` filter out.
 - Telegraf: `[outputs.sql.convert] timestamp = "DATETIME"` (see `telegraf-mysql-output.conf.example`).
+
+### Time zone tables must be loaded (`CONVERT_TZ` returns `NULL`)
+
+`berlin_time`, the rollup procedures and `time_utc` all use named zones
+(`CONVERT_TZ(..., 'UTC', 'Europe/Berlin')`). If the server's time zone tables are empty,
+`CONVERT_TZ` silently returns `NULL`. Check with:
+
+```sql
+SELECT CONVERT_TZ(NOW(), 'UTC', 'Europe/Berlin') AS berlin;   -- NULL = tables not loaded
+```
+
+On Debian/Ubuntu, load them from the system zoneinfo database:
+
+```bash
+sudo apt install -y tzdata        # usually already installed
+mysql_tzinfo_to_sql /usr/share/zoneinfo | sudo mysql mysql
+```
+
+Plain `sudo mysql` normally works for the MySQL root user through the socket; if it asks for a
+password, use `sudo mysql -u root -p mysql`. A few warnings about `posix/` or `right/` files
+are harmless. Do this before loading `schema.sql`, or re-check the stored values afterwards.
 
 ### Upgrading an existing installation (TIMESTAMP columns, no `time_utc`)
 
