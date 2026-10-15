@@ -7,6 +7,10 @@ the database (no external cron job needed for the rollups themselves).
 See `../../acquisition/tasmota-ir/` for how readings get here, and
 `../../presentation/email/` for a report that reads the rollup tables.
 
+Optional: `temperature/` rolls up the readings of an rtl_433 temperature sensor into time-weighted
+hourly / daily / ... / yearly averages (see `temperature/README.md`). It is independent of the meter
+tables and not needed for the consumption roll-ups.
+
 ## Setup
 
 1. Create a database and a user for telegraf to write into:
