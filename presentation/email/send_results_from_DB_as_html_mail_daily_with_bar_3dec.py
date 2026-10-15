@@ -9,9 +9,19 @@ CLI flags - see three-phase-meter-mail.env.example for how crontab.example
 supplies them via a sourced env file. Nothing here has a real-looking
 default: a missing required value fails immediately at argument-parsing
 time instead of silently falling back to something wrong.
+
+Optional temperature: with --temperature-model and --temperature-id every section gets two extra
+columns just before "Verbrauch Gesamt" - the time-weighted average temperature ("Ø °C") and a
+narrow trend column (one dot per row, connected by a thin line, newest row on top; blue = cold,
+red = warm). The values come from the roll-up tables of persistence/mysql/temperature. Without
+these two flags the report has no temperature columns, and if the flags are given but the
+temperature tables are missing, unreadable or empty, the script prints a warning and builds the
+report without them. See README.md ("Optional: temperature columns").
 """
 import argparse
+import itertools
 import os
+import re
 
 import mysql.connector
 import smtplib
@@ -288,6 +298,29 @@ def generate_html_begin():
             color: black;
             z-index: 2;
         }
+        /* Temperatur: schmale Wertespalte und Verlaufsspalte (Punkt + dünne Linie) */
+        th.temp, td.temp {
+            padding-left: 4px;
+            padding-right: 4px;
+        }
+        th.temp {
+            text-align: center;
+        }
+        td.partial {
+            color: #888;
+            font-style: italic;
+        }
+        td.spark {
+            padding: 0;
+            width: 56px;
+            min-width: 56px;
+        }
+        td.spark {
+            line-height: 0;
+        }
+        td.spark svg {
+            display: block;
+        }
     </style>
     </head>
     <body>
@@ -300,14 +333,159 @@ def generate_html_end():
     return "</body></html>"
 
 
+# --- Temperatur: Wertespalte + Verlaufsspalte -----------------------------------------------
+# Die Abfragen liefern pro Abschnitt die Spalte TEMP_COL (Text, deutsch formatiert) sowie die
+# Hilfsspalten _temp (Zahl) und _cov (Abdeckung in %); Spalten, die mit "_" beginnen, werden nicht
+# angezeigt. Direkt hinter TEMP_COL kommt die Verlaufsspalte: je Zeile ein Punkt, benachbarte
+# Punkte sind durch eine dünne Linie verbunden (wie ein Grafana-Diagramm, gedreht: neueste Zeile
+# oben, Temperatur nach rechts).
+TEMP_COL = 'Ø °C'
+SPARK_W = 56                # Breite der Verlaufsspalte in px
+SPARK_ROW_H = 47            # Zeilenhöhe in px: 30px Balken + 2 * 8px Padding + 1px Rahmen
+SPARK_PAD = 5               # Abstand der Punkte vom Rand in px
+TEMP_DECIMALS = 1
+TEMP_PARTIAL_BELOW_PCT = 90  # darunter: grauer Wert, hohler Punkt
+# Feste Farbskala in °C (kalt = blau, warm = rot), damit dieselbe Temperatur in allen Abschnitten
+# dieselbe Farbe hat. Zwischen den Stützstellen wird linear interpoliert.
+TEMP_COLOR_STOPS = [(-5, '#1E40AF'), (5, '#2563EB'), (11, '#06B6D4'), (17, '#22C55E'),
+                    (23, '#F59E0B'), (30, '#DC2626')]
+
+_spark_ids = itertools.count(1)
+
+
+def temperature_table(model, sensor_id, level):
+    """Name der Temperaturtabelle, siehe persistence/mysql/temperature/README.md."""
+    safe_model = re.sub(r'[^A-Za-z0-9]+', '_', model)
+    return f"rtl_433_{safe_model}_{int(sensor_id)}_TEMPERATURE_{level}"
+
+
+def temperature_available(db_config, model, sensor_id):
+    """True if all six roll-up tables of the sensor can be read and the hourly table has data.
+
+    Not everybody who collects meter readings also collects temperature; a missing, unreadable
+    (information_schema only lists tables the user may access) or empty temperature table must not
+    break the report, so the caller falls back to the report without temperature columns."""
+    tables = [temperature_table(model, sensor_id, level) for level in TEMP_JOIN_ON]
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM information_schema.tables "
+                       f"WHERE table_schema = DATABASE() AND table_name IN ({', '.join(['%s'] * len(tables))})",
+                       tables)
+        found = cursor.fetchone()[0]
+        has_data = False
+        if found == len(tables):
+            cursor.execute(f"SELECT 1 FROM `{temperature_table(model, sensor_id, 'hourly')}` LIMIT 1")
+            has_data = cursor.fetchone() is not None
+        cursor.close()
+        conn.close()
+    except mysql.connector.Error as err:
+        print(f"Warnung: Temperaturtabellen nicht prüfbar ({err}) - Bericht ohne Temperatur")
+        return False
+
+    if found != len(tables):
+        print(f"Warnung: nur {found} von {len(tables)} Temperaturtabellen für {model} {sensor_id} "
+              f"vorhanden/lesbar - Bericht ohne Temperatur")
+        return False
+    if not has_data:
+        print(f"Warnung: noch keine Temperaturdaten für {model} {sensor_id} - Bericht ohne Temperatur")
+        return False
+    return True
+
+
+def temp_color(value):
+    stops = TEMP_COLOR_STOPS
+    if value <= stops[0][0]:
+        return stops[0][1]
+    if value >= stops[-1][0]:
+        return stops[-1][1]
+    for (t0, c0), (t1, c1) in zip(stops, stops[1:]):
+        if t0 <= value <= t1:
+            return rgb_to_hex(interpolate_color(c0, c1, (value - t0) / (t1 - t0)))
+
+
+def _spark_x(value, lo, hi):
+    if hi <= lo:
+        return SPARK_W / 2
+    return SPARK_PAD + (value - lo) / (hi - lo) * (SPARK_W - 2 * SPARK_PAD)
+
+
+def spark_cell(idx, temps, covs, lo, hi):
+    """Zelle der Verlaufsspalte für Datenzeile idx (0 = neueste Zeile, oben).
+
+    Jede Zelle zeichnet ihren Punkt in der Zeilenmitte und die halbe Linie zum Nachbarn oben und
+    unten, bis zur Zeilengrenze. Die waagerechten Rahmen sind in dieser Spalte ausgeblendet,
+    dadurch setzen sich die Halbstücke benachbarter Zeilen nahtlos zu einer Linie fort."""
+    n = len(temps)
+    top = '1px solid #ddd' if idx == 0 else 'hidden'
+    bottom = '1px solid #ddd' if idx == n - 1 else 'hidden'
+    td_open = f'<td class="spark" style="border-top: {top}; border-bottom: {bottom};">'
+    value = temps[idx]
+    if value is None:
+        return td_open + '</td>'
+
+    h = SPARK_ROW_H
+    x, y = _spark_x(value, lo, hi), h / 2
+    color = temp_color(value)
+    defs, lines = '', ''
+
+    def half(x1, y1, x2, y2, color1, color2):
+        gid = f"sg{next(_spark_ids)}"
+        defs_part = (f'<linearGradient id="{gid}" gradientUnits="userSpaceOnUse" '
+                     f'x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}">'
+                     f'<stop offset="0" stop-color="{color1}"/><stop offset="1" stop-color="{color2}"/>'
+                     f'</linearGradient>')
+        line_part = (f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
+                     f'stroke="url(#{gid})" stroke-width="1.2"/>')
+        return defs_part, line_part
+
+    if idx > 0 and temps[idx - 1] is not None:   # Nachbar oben = neuer
+        other = temps[idx - 1]
+        d, l = half((_spark_x(other, lo, hi) + x) / 2, 0, x, y,
+                    temp_color((other + value) / 2), color)
+        defs += d
+        lines += l
+    if idx < n - 1 and temps[idx + 1] is not None:   # Nachbar unten = älter
+        other = temps[idx + 1]
+        d, l = half(x, y, (x + _spark_x(other, lo, hi)) / 2, h,
+                    color, temp_color((other + value) / 2))
+        defs += d
+        lines += l
+
+    cov = covs[idx]
+    partial = cov is not None and cov < TEMP_PARTIAL_BELOW_PCT
+    fill = '#ffffff' if partial else color
+    tip = f"{value:.2f} °C".replace('.', ',') + (f" ({cov:.0f} % abgedeckt)" if partial else "")
+    dot = (f'<circle cx="{x:.1f}" cy="{y:.1f}" r="2.5" fill="{fill}" stroke="{color}" '
+           f'stroke-width="{1.5 if partial else 0}"><title>{tip}</title></circle>')
+    return (f'{td_open}<svg width="{SPARK_W}" height="{h}" viewBox="0 0 {SPARK_W} {h}">'
+            f'<defs>{defs}</defs>{lines}{dot}</svg></td>')
+
+
 def generate_html_table(data, column_names, max_consumption):
+    shown = [i for i, name in enumerate(column_names) if not name.startswith('_')]
+    bar_idx = column_names.index('Verbrauch Gesamt')
+    temp_idx = column_names.index(TEMP_COL) if TEMP_COL in column_names else None
+
+    temps, covs, lo, hi = [], [], 0, 0
+    if temp_idx is not None:
+        t_col, c_col = column_names.index('_temp'), column_names.index('_cov')
+        temps = [row[t_col] for row in data[:-1]]     # ohne die "Summe"-Zeile
+        covs = [row[c_col] for row in data[:-1]]
+        present = [v for v in temps if v is not None]
+        if present:
+            lo, hi = min(present), max(present)
+
     # Start HTML table
     html = "<table>"
 
     # Generate table header dynamically
     html += "<tr>"
-    for column in column_names:
-        html += f"<th>{column}</th>"
+    for i in shown:
+        if i == temp_idx:   # one header over the value column and the trend column
+            html += f'<th class="temp" colspan="2">{column_names[i]}</th>'
+        else:
+            html += f"<th>{column_names[i]}</th>"
     html += "</tr>"
 
     # Populate table rows with data
@@ -319,8 +497,9 @@ def generate_html_table(data, column_names, max_consumption):
         else:  # Regular row
             html += "<tr>"
 
-        for cell_idx, cell in enumerate(row):
-            if cell_idx == 4 and not last_row:
+        for cell_idx in shown:
+            cell = row[cell_idx]
+            if cell_idx == bar_idx and not last_row:
                 cell_as_float = german_to_float(cell)
 
                 percentage = (cell_as_float / max_consumption) * 100 if max_consumption > 0 else 0
@@ -332,6 +511,13 @@ def generate_html_table(data, column_names, max_consumption):
                         </div>
                     </td>
                 """
+            elif cell_idx == temp_idx:
+                cov = None if last_row else covs[index]
+                partial = cov is not None and temps[index] is not None and cov < TEMP_PARTIAL_BELOW_PCT
+                css = "temp partial" if partial else "temp"
+                tip = f' title="nur {cov:.0f} % des Zeitraums mit Messwerten"' if partial else ""
+                html += f'<td class="{css}"{tip}>{cell}</td>'
+                html += '<td class="spark"></td>' if last_row else spark_cell(index, temps, covs, lo, hi)
             else:
                 html += f"<td>{cell}</td>"
         html += "</tr>"
@@ -339,6 +525,8 @@ def generate_html_table(data, column_names, max_consumption):
     # Close HTML table
     html += "</table>"
     return html
+
+
 
 
 def publish_html_to_webserver(html, local_publish_dir, remote_ssh_host, remote_publish_dir):
@@ -415,214 +603,129 @@ def send_email(html_content, meter_number, sender_name, sender_email, reply_to_n
         print(f"Fehler beim Senden der Mail: {e}")
 
 
-def build_query_list(device_id):
-    return [
-          ["<h3>stündlich, gestern</h3><br>",
-           f"""
-                WITH combined as (
-                    (SELECT 1 AS sort_order, ROW_NUMBER() OVER (ORDER BY time DESC) AS rn, DATE_FORMAT(time, '%d.%m.%Y, %H:00 - %H:59') AS `Zeitraum`, FORMAT(SML_1_8_0__Bezug_Gesamt, 3, 'de_DE') AS `Stand Gesamt`, FORMAT(SML_1_8_1__Bezug_HT, 3, 'de_DE') AS `Stand HT`, FORMAT(SML_1_8_2__Bezug_NT, 3, 'de_DE') AS `Stand NT`, IFNULL(FORMAT(power_consumption_total, 3, 'de_DE'), '--') AS `Verbrauch Gesamt`, IFNULL(FORMAT(power_consumption_HT, 3, 'de_DE'), '--') AS `Verbrauch HT`, IFNULL(FORMAT(power_consumption_NT, 3, 'de_DE'), '--') AS `Verbrauch NT`
-                    FROM `tasmota_{device_id}_SENSOR_CONSUMPTION_hourly` WHERE DATE(time) = CURDATE() - INTERVAL 1 DAY)
-                    UNION ALL
-                    (SELECT 2 AS sort_order, NULL AS rn, 'Summe' AS `Zeitraum`, '&nbsp;'   AS `Stand Gesamt`, '&nbsp;'  AS `Stand HT`, '&nbsp;'  AS `Stand NT`, FORMAT(SUM(power_consumption_total), 3, 'de_DE') AS `Verbrauch Gesamt`, FORMAT(SUM(power_consumption_HT), 3, 'de_DE') AS `Verbrauch HT`, FORMAT(SUM(power_consumption_NT), 3, 'de_DE') AS `Verbrauch NT`
-                    FROM tasmota_{device_id}_SENSOR_CONSUMPTION_hourly
-                    WHERE DATE(time) = CURDATE() - INTERVAL 1 DAY)
-                    ORDER BY
-                    sort_order,
-                    rn
-                )
-                SELECT `Zeitraum`, `Stand Gesamt`, `Stand HT`, `Stand NT`, `Verbrauch Gesamt`, `Verbrauch HT`, `Verbrauch NT`
-                FROM combined;
-          """]
-        , ["<h3>täglich (die letzten 14 Tage)</h3><br>",
-           f"""
-                WITH combined as (
-                    (SELECT 1 AS sort_order, ROW_NUMBER() OVER (ORDER BY time DESC) AS rn, DATE_FORMAT(time, '%a, %d.%m.%Y') AS `Datum`, FORMAT(SML_1_8_0__Bezug_Gesamt, 3, 'de_DE') AS `Stand Gesamt`, FORMAT(SML_1_8_1__Bezug_HT, 3, 'de_DE') AS `Stand HT`, FORMAT(SML_1_8_2__Bezug_NT, 3, 'de_DE') AS `Stand NT`, IFNULL(FORMAT(power_consumption_total, 3, 'de_DE'), '--') AS `Verbrauch Gesamt`, IFNULL(FORMAT(power_consumption_HT, 3, 'de_DE'), '--') AS `Verbrauch HT`, IFNULL(FORMAT(power_consumption_NT, 3, 'de_DE'), '--') AS `Verbrauch NT`
-                     FROM `tasmota_{device_id}_SENSOR_CONSUMPTION_daily` WHERE DATE(time) >= (CURDATE() - INTERVAL 14 DAY)
-                    )
-                    UNION ALL
-                    (SELECT
-                        2 AS sort_order,
-                        NULL AS rn,
-                        'Summe / Durchschnitt' AS `Datum`,
-                        '&nbsp;' AS `Stand Gesamt`,
-                        '&nbsp;' AS `Stand HT`,
-                        '&nbsp;' AS `Stand NT`,
-                        CONCAT (
-                            FORMAT(SUM(power_consumption_total), 3, 'de_DE'),
-                            ' / ',
-                            FORMAT(AVG(power_consumption_total), 3, 'de_DE')
-                        ) AS `Verbrauch Gesamt`,
-                        FORMAT(SUM(power_consumption_HT), 3, 'de_DE') AS `Verbrauch HT`,
-                        FORMAT(SUM(power_consumption_NT), 3, 'de_DE') AS `Verbrauch NT`
-                     FROM
-                         `tasmota_{device_id}_SENSOR_CONSUMPTION_daily`
-                     WHERE
-                         DATE(time) >= (CURDATE() - INTERVAL 14 DAY)
-                    )
-                    ORDER BY
-                    sort_order,
-                    rn
-                )
-                SELECT `Datum`, `Stand Gesamt`, `Stand HT`, `Stand NT`, `Verbrauch Gesamt`, `Verbrauch HT`, `Verbrauch NT`
-                FROM combined;
-          """]
-        , ["<h3>wöchentlich (die letzten 10 Wochen)</h3><br>",
-           f"""
-                WITH combined as (
-                    (SELECT 1 AS sort_order, ROW_NUMBER() OVER (ORDER BY time DESC) AS rn, CONCAT (DATE_FORMAT(DATE_SUB(time, INTERVAL 6 DAY), '%d.%m.%Y'), ' - ', DATE_FORMAT(time, '%d.%m.%Y')) AS `Woche`, FORMAT(SML_1_8_0__Bezug_Gesamt, 3, 'de_DE') AS `Stand Gesamt`, FORMAT(SML_1_8_1__Bezug_HT, 3, 'de_DE') AS `Stand HT`, FORMAT(SML_1_8_2__Bezug_NT, 3, 'de_DE') AS `Stand NT`, IFNULL(FORMAT(power_consumption_total, 3, 'de_DE'), '--') AS `Verbrauch Gesamt`, IFNULL(FORMAT(power_consumption_HT, 3, 'de_DE'), '--') AS `Verbrauch HT`, IFNULL(FORMAT(power_consumption_NT, 3, 'de_DE'), '--') AS `Verbrauch NT`
-                     FROM `tasmota_{device_id}_SENSOR_CONSUMPTION_weekly` WHERE DATE(time) >= (CURDATE() - INTERVAL 10 WEEK) AND time < DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)
-                    )
-                    UNION ALL
-                    (SELECT
-                        2 AS sort_order,
-                        NULL AS rn,
-                        'Summe / Durchschnitt' AS `Woche`,
-                        '&nbsp;' AS `Stand Gesamt`,
-                        '&nbsp;' AS `Stand HT`,
-                        '&nbsp;' AS `Stand NT`,
-                        CONCAT(
-                            FORMAT(SUM(power_consumption_total), 3, 'de_DE'),
-                            ' / ',
-                            FORMAT(AVG(power_consumption_total), 3, 'de_DE')
-                        ) AS `Verbrauch Gesamt`,
-                        FORMAT(SUM(power_consumption_HT), 3, 'de_DE') AS `Verbrauch HT`,
-                        FORMAT(SUM(power_consumption_NT), 3, 'de_DE') AS `Verbrauch NT`
-                     FROM
-                        `tasmota_{device_id}_SENSOR_CONSUMPTION_weekly`
-                     WHERE
-                         DATE(time) >= (CURDATE() - INTERVAL 10 WEEK)
-                    )
-                    ORDER BY
-                    sort_order,
-                    rn
-                )
-                SELECT `Woche`, `Stand Gesamt`, `Stand HT`, `Stand NT`, `Verbrauch Gesamt`, `Verbrauch HT`, `Verbrauch NT`
-                FROM combined;
-          """]
-        , ["<h3>monatlich</h3><br>",
-           f"""
-                WITH combined as (
-                    (SELECT 1 AS sort_order, ROW_NUMBER() OVER (ORDER BY time DESC) AS rn, CONCAT( DATE_FORMAT(DATE_SUB(time, INTERVAL DAY(time)-1 DAY), '%d.%m.%Y'), ' - ', DATE_FORMAT(time, '%d.%m.%Y') ) AS `Monat`, FORMAT(SML_1_8_0__Bezug_Gesamt, 3, 'de_DE') AS `Stand Gesamt`, FORMAT(SML_1_8_1__Bezug_HT, 3, 'de_DE') AS `Stand HT`, FORMAT(SML_1_8_2__Bezug_NT, 3, 'de_DE') AS `Stand NT`, IFNULL(FORMAT(power_consumption_total, 3, 'de_DE'), '--') AS `Verbrauch Gesamt`, IFNULL(FORMAT(power_consumption_HT, 3, 'de_DE'), '--') AS `Verbrauch HT`, IFNULL(FORMAT(power_consumption_NT, 3, 'de_DE'), '--') AS `Verbrauch NT`
-                     FROM `tasmota_{device_id}_SENSOR_CONSUMPTION_monthly` WHERE time < DATE_FORMAT(CURDATE(), '%Y-%m-01')
-                    )
-                    UNION ALL
-                    (SELECT
-                        2 AS sort_order,
-                        NULL AS rn,
-                        'Summe / Durchschnitt' AS `Monat`,
-                        '&nbsp;' AS `Stand Gesamt`,
-                        '&nbsp;' AS `Stand HT`,
-                        '&nbsp;' AS `Stand NT`,
-                        CONCAT(
-                            FORMAT(SUM(power_consumption_total), 3, 'de_DE'),
-                            ' / ',
-                            FORMAT(AVG(power_consumption_total), 3, 'de_DE')
-                        ) AS `Verbrauch Gesamt`,
-                        FORMAT(SUM(power_consumption_HT), 3, 'de_DE') AS `Verbrauch HT`,
-                        FORMAT(SUM(power_consumption_NT), 3, 'de_DE') AS `Verbrauch NT`
-                     FROM
-                        `tasmota_{device_id}_SENSOR_CONSUMPTION_monthly`
-                     WHERE time < DATE_FORMAT(CURDATE(), '%Y-%m-01')
-                    )
-                    ORDER BY
-                    sort_order,
-                    rn
-                )
-                SELECT `Monat`, `Stand Gesamt`, `Stand HT`, `Stand NT`, `Verbrauch Gesamt`, `Verbrauch HT`, `Verbrauch NT`
-                FROM combined;
-          """]
-        , ["<h3>quartalsweise</h3><br>",
-           f"""
+# Wie die Temperatur-Zeile einer Periode in der Verbrauchstabelle gefunden wird. "time" ist dort die
+# lokale Zeit der letzten Ablesung der Periode, "time_utc" dieselbe Zeit in UTC; die
+# Temperaturtabellen haben period_start_utc/period_start_local (persistence/mysql/temperature).
+# Stunden werden über UTC verbunden (eindeutig auch in der doppelten Stunde im Herbst).
+TEMP_JOIN_ON = {
+    'hourly': "t.period_start_utc = time_utc - INTERVAL (MINUTE(time_utc) * 60 + SECOND(time_utc)) SECOND",
+    'daily': "t.period_start_local = DATE(time)",
+    'weekly': "t.period_start_local = DATE(time) - INTERVAL WEEKDAY(time) DAY",
+    'monthly': "t.period_start_local = DATE(time) - INTERVAL (DAYOFMONTH(time) - 1) DAY",
+    'quarterly': "t.period_start_local = MAKEDATE(YEAR(time), 1) + INTERVAL ((QUARTER(time) - 1) * 3) MONTH",
+    'yearly': "t.period_start_local = MAKEDATE(YEAR(time), 1)",
+}
+
+
+def _section_sql(device_id, temperature, level, label_alias, label_expr, detail_where, summary_where,
+                 summary_label, summary_total):
+    """Abfrage eines Abschnitts. temperature: None oder (model, sensor_id)."""
+    table = f"`tasmota_{device_id}_SENSOR_CONSUMPTION_{level}`"
+
+    join = temp_detail = temp_summary = help_detail = help_summary = temp_final = help_final = ""
+    if temperature:
+        model, sensor_id = temperature
+        join = f"LEFT JOIN `{temperature_table(model, sensor_id, level)}` t ON {TEMP_JOIN_ON[level]}"
+        # Detailzeilen: Wert der Periode. Summenzeile: zeitgewichteter Mittelwert über alle Zeilen.
+        temp_detail = f"IFNULL(FORMAT(t.avg_temp_c, {TEMP_DECIMALS}, 'de_DE'), '--') AS `{TEMP_COL}`,"
+        temp_summary = (f"IFNULL(FORMAT(SUM(t.integral_cs) / NULLIF(SUM(t.covered_seconds), 0), "
+                        f"{TEMP_DECIMALS}, 'de_DE'), '--') AS `{TEMP_COL}`,")
+        help_detail = ", t.avg_temp_c AS _temp, t.coverage_pct AS _cov"
+        help_summary = ", NULL AS _temp, NULL AS _cov"
+        temp_final = f"`{TEMP_COL}`, "
+        help_final = ", _temp, _cov"
+
+    return f"""
                 WITH combined as (
                     (SELECT 1 AS sort_order,
                             ROW_NUMBER() OVER (ORDER BY time DESC) AS rn,
-                            CONCAT(
-                                DATE_FORMAT(MAKEDATE(YEAR(time), 1) + INTERVAL (QUARTER(time)*3 - 3) MONTH, '%d.%m.%Y'),
-                                ' - ',
-                                DATE_FORMAT(LAST_DAY(MAKEDATE(YEAR(time), 1) + INTERVAL (QUARTER(time)*3 - 1) MONTH), '%d.%m.%Y')
-                            ) AS `Quartal`,
+                            {label_expr} AS `{label_alias}`,
                             FORMAT(SML_1_8_0__Bezug_Gesamt, 3, 'de_DE') AS `Stand Gesamt`,
                             FORMAT(SML_1_8_1__Bezug_HT, 3, 'de_DE') AS `Stand HT`,
                             FORMAT(SML_1_8_2__Bezug_NT, 3, 'de_DE') AS `Stand NT`,
+                            {temp_detail}
                             IFNULL(FORMAT(power_consumption_total, 3, 'de_DE'), '--') AS `Verbrauch Gesamt`,
                             IFNULL(FORMAT(power_consumption_HT, 3, 'de_DE'), '--') AS `Verbrauch HT`,
                             IFNULL(FORMAT(power_consumption_NT, 3, 'de_DE'), '--') AS `Verbrauch NT`
-                     FROM `tasmota_{device_id}_SENSOR_CONSUMPTION_quarterly` WHERE time < MAKEDATE(YEAR(CURDATE()), 1) + INTERVAL (QUARTER(CURDATE())*3 - 3) MONTH
+                            {help_detail}
+                     FROM {table}
+                     {join}
+                     WHERE {detail_where}
                     )
                     UNION ALL
                     (SELECT
                         2 AS sort_order,
                         NULL AS rn,
-                        'Summe / Durchschnitt' AS `Quartal`,
+                        '{summary_label}' AS `{label_alias}`,
                         '&nbsp;' AS `Stand Gesamt`,
                         '&nbsp;' AS `Stand HT`,
                         '&nbsp;' AS `Stand NT`,
-                        CONCAT(
-                            FORMAT(SUM(power_consumption_total), 3, 'de_DE'),
-                            ' / ',
-                            FORMAT(AVG(power_consumption_total), 3, 'de_DE')
-                        ) AS `Verbrauch Gesamt`,
+                        {temp_summary}
+                        {summary_total} AS `Verbrauch Gesamt`,
                         FORMAT(SUM(power_consumption_HT), 3, 'de_DE') AS `Verbrauch HT`,
                         FORMAT(SUM(power_consumption_NT), 3, 'de_DE') AS `Verbrauch NT`
-                     FROM
-                        `tasmota_{device_id}_SENSOR_CONSUMPTION_quarterly`
-                     WHERE time < MAKEDATE(YEAR(CURDATE()), 1) + INTERVAL (QUARTER(CURDATE())*3 - 3) MONTH
+                        {help_summary}
+                     FROM {table}
+                     {join}
+                     WHERE {summary_where}
                     )
                     ORDER BY
                     sort_order,
                     rn
                 )
-                SELECT `Quartal`, `Stand Gesamt`, `Stand HT`, `Stand NT`, `Verbrauch Gesamt`, `Verbrauch HT`, `Verbrauch NT`
+                SELECT `{label_alias}`, `Stand Gesamt`, `Stand HT`, `Stand NT`, {temp_final}`Verbrauch Gesamt`, `Verbrauch HT`, `Verbrauch NT`{help_final}
                 FROM combined;
-          """]
-        , ["<h3>jährlich</h3><br>",
-           f"""
-                WITH combined as (
-                    (SELECT 1 AS sort_order,
-                            ROW_NUMBER() OVER (ORDER BY time DESC) AS rn,
-                              CONCAT(
-                                DATE_FORMAT(MAKEDATE(YEAR(time), 1), '%d.%m.%Y'),
-                                ' - ',
-                                DATE_FORMAT(
-                                LAST_DAY(DATE_ADD(MAKEDATE(YEAR(time), 1), INTERVAL 11 MONTH)),
-                                '%d.%m.%Y'
-                                )
-                            ) AS `Jahr`,
-                            FORMAT(SML_1_8_0__Bezug_Gesamt, 3, 'de_DE') AS `Stand Gesamt`,
-                            FORMAT(SML_1_8_1__Bezug_HT, 3, 'de_DE') AS `Stand HT`,
-                            FORMAT(SML_1_8_2__Bezug_NT, 3, 'de_DE') AS `Stand NT`,
-                            IFNULL(FORMAT(power_consumption_total, 3, 'de_DE'), '--') AS `Verbrauch Gesamt`,
-                            IFNULL(FORMAT(power_consumption_HT, 3, 'de_DE'), '--') AS `Verbrauch HT`,
-                            IFNULL(FORMAT(power_consumption_NT, 3, 'de_DE'), '--') AS `Verbrauch NT`
-                     FROM `tasmota_{device_id}_SENSOR_CONSUMPTION_yearly` WHERE time < MAKEDATE(YEAR(CURDATE()), 1)
-                    )
-                    UNION ALL
-                    (SELECT
-                        2 AS sort_order,
-                        NULL AS rn,
-                        'Summe / Durchschnitt' AS `Jahr`,
-                        '&nbsp;' AS `Stand Gesamt`,
-                        '&nbsp;' AS `Stand HT`,
-                        '&nbsp;' AS `Stand NT`,
-                        CONCAT(
-                            FORMAT(SUM(power_consumption_total), 3, 'de_DE'),
-                            ' / ',
-                            FORMAT(AVG(power_consumption_total), 3, 'de_DE')
-                        ) AS `Verbrauch Gesamt`,
-                        FORMAT(SUM(power_consumption_HT), 3, 'de_DE') AS `Verbrauch HT`,
-                        FORMAT(SUM(power_consumption_NT), 3, 'de_DE') AS `Verbrauch NT`
-                     FROM
-                        `tasmota_{device_id}_SENSOR_CONSUMPTION_yearly`
-                     WHERE time < MAKEDATE(YEAR(CURDATE()), 1)
-                    )
-                    ORDER BY
-                    sort_order,
-                    rn
-                )
-                SELECT `Jahr`, `Stand Gesamt`, `Stand HT`, `Stand NT`, `Verbrauch Gesamt`, `Verbrauch HT`, `Verbrauch NT`
-                FROM combined;
-          """]
-        ]
+          """
+
+
+def build_query_list(device_id, temperature=None):
+    """temperature: None (no temperature columns) or (model, sensor_id), e.g. ('inFactory-TH', 168)."""
+    total_and_avg = ("CONCAT(FORMAT(SUM(power_consumption_total), 3, 'de_DE'), ' / ', "
+                     "FORMAT(AVG(power_consumption_total), 3, 'de_DE'))")
+    total_only = "FORMAT(SUM(power_consumption_total), 3, 'de_DE')"
+    avg_label = 'Summe / Durchschnitt'
+
+    sections = [
+        ("<h3>stündlich, gestern</h3><br>", dict(
+            level='hourly', label_alias='Zeitraum',
+            label_expr="DATE_FORMAT(time, '%d.%m.%Y, %H:00 - %H:59')",
+            detail_where="DATE(time) = CURDATE() - INTERVAL 1 DAY",
+            summary_where="DATE(time) = CURDATE() - INTERVAL 1 DAY",
+            summary_label='Summe', summary_total=total_only)),
+        ("<h3>täglich (die letzten 14 Tage)</h3><br>", dict(
+            level='daily', label_alias='Datum',
+            label_expr="DATE_FORMAT(time, '%a, %d.%m.%Y')",
+            detail_where="DATE(time) >= (CURDATE() - INTERVAL 14 DAY)",
+            summary_where="DATE(time) >= (CURDATE() - INTERVAL 14 DAY)",
+            summary_label=avg_label, summary_total=total_and_avg)),
+        ("<h3>wöchentlich (die letzten 10 Wochen)</h3><br>", dict(
+            level='weekly', label_alias='Woche',
+            label_expr="CONCAT(DATE_FORMAT(DATE_SUB(time, INTERVAL 6 DAY), '%d.%m.%Y'), ' - ', DATE_FORMAT(time, '%d.%m.%Y'))",
+            detail_where="DATE(time) >= (CURDATE() - INTERVAL 10 WEEK) AND time < DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)",
+            summary_where="DATE(time) >= (CURDATE() - INTERVAL 10 WEEK)",
+            summary_label=avg_label, summary_total=total_and_avg)),
+        ("<h3>monatlich</h3><br>", dict(
+            level='monthly', label_alias='Monat',
+            label_expr="CONCAT(DATE_FORMAT(DATE_SUB(time, INTERVAL DAY(time)-1 DAY), '%d.%m.%Y'), ' - ', DATE_FORMAT(time, '%d.%m.%Y'))",
+            detail_where="time < DATE_FORMAT(CURDATE(), '%Y-%m-01')",
+            summary_where="time < DATE_FORMAT(CURDATE(), '%Y-%m-01')",
+            summary_label=avg_label, summary_total=total_and_avg)),
+        ("<h3>quartalsweise</h3><br>", dict(
+            level='quarterly', label_alias='Quartal',
+            label_expr=("CONCAT(DATE_FORMAT(MAKEDATE(YEAR(time), 1) + INTERVAL (QUARTER(time)*3 - 3) MONTH, '%d.%m.%Y'), ' - ', "
+                        "DATE_FORMAT(LAST_DAY(MAKEDATE(YEAR(time), 1) + INTERVAL (QUARTER(time)*3 - 1) MONTH), '%d.%m.%Y'))"),
+            detail_where="time < MAKEDATE(YEAR(CURDATE()), 1) + INTERVAL (QUARTER(CURDATE())*3 - 3) MONTH",
+            summary_where="time < MAKEDATE(YEAR(CURDATE()), 1) + INTERVAL (QUARTER(CURDATE())*3 - 3) MONTH",
+            summary_label=avg_label, summary_total=total_and_avg)),
+        ("<h3>jährlich</h3><br>", dict(
+            level='yearly', label_alias='Jahr',
+            label_expr=("CONCAT(DATE_FORMAT(MAKEDATE(YEAR(time), 1), '%d.%m.%Y'), ' - ', "
+                        "DATE_FORMAT(LAST_DAY(DATE_ADD(MAKEDATE(YEAR(time), 1), INTERVAL 11 MONTH)), '%d.%m.%Y'))"),
+            detail_where="time < MAKEDATE(YEAR(CURDATE()), 1)",
+            summary_where="time < MAKEDATE(YEAR(CURDATE()), 1)",
+            summary_label=avg_label, summary_total=total_and_avg)),
+    ]
+    return [[title, _section_sql(device_id, temperature, **kwargs)] for title, kwargs in sections]
 
 
 def parse_args():
@@ -666,7 +769,20 @@ def parse_args():
                          help="Optional description of the reading head/gateway hardware, appended as "
                               "'..., über <reading-head-description>' after the meter number if set")
 
-    return parser.parse_args()
+    parser.add_argument("--temperature-model", default=None,
+                         help="rtl_433 model of the temperature sensor, e.g. inFactory-TH. Together with "
+                              "--temperature-id this adds the temperature columns (roll-up tables from "
+                              "persistence/mysql/temperature)")
+    parser.add_argument("--temperature-id", type=int, default=None,
+                         help="rtl_433 id of the temperature sensor, e.g. 168")
+    parser.add_argument("--preview-file", default=None,
+                         help="Write the HTML report to this file and stop: nothing is published "
+                              "or emailed")
+
+    args = parser.parse_args()
+    if (args.temperature_model is None) != (args.temperature_id is None):
+        parser.error("--temperature-model and --temperature-id must be given together")
+    return args
 
 
 def main():
@@ -682,11 +798,17 @@ def main():
     }
 
     meter_number, html_for_meter_number = get_html_for_meter_number(db_config, args.device_id)
-    query_list = build_query_list(args.device_id)
+    temperature = (args.temperature_model, args.temperature_id) if args.temperature_model else None
+    if temperature and not temperature_available(db_config, *temperature):
+        temperature = None   # warning already printed: carry on with the plain report
+    query_list = build_query_list(args.device_id, temperature)
+    # "Verbrauch Gesamt" is column 4, or column 5 when the temperature column is in front of it
+    consumption_col = 5 if temperature else 4
 
     html_table_list = []
     for query in query_list:
-        data, column_names, max_consumption = query_database(db_config, query=query[1], col_idx_for_max=4)
+        data, column_names, max_consumption = query_database(db_config, query=query[1],
+                                                             col_idx_for_max=consumption_col)
 
         if data:
             table_html = generate_html_table(data, column_names, max_consumption)
@@ -702,11 +824,21 @@ def main():
                 f'(Nur im privaten/lokalen Hausnetz verfügbar.)</li>'
             )
 
+        temperature_li = ""
+        if temperature:
+            temperature_li = (
+                f'<li>„Ø °C“ ist die zeitgewichtete Durchschnittstemperatur des Sensors '
+                f'{args.temperature_model} ({args.temperature_id}); die Farbe der Punkte reicht von blau (kalt) '
+                f'bis rot (warm). Graue Werte und hohle Punkte: weniger als {TEMP_PARTIAL_BELOW_PCT} % '
+                f'des Zeitraums waren durch Messwerte abgedeckt.</li>'
+            )
+
         reading_head_suffix = f", über {args.reading_head_description}" if args.reading_head_description else ""
         html += f"""
         <h2>Daten vom {args.meter_description}, {meter_number}{reading_head_suffix}</h2>
         <ul>
             <li>Alle „Stromwerte“ sind in <tt>[kWh]</tt> angegeben.</li>
+            {temperature_li}
             {grafana_li}
             <li>Alle Berichte sind im <a href="{args.public_base_url}/index.php">Archiv</a> gesammelt.</li>
         </ul>
@@ -722,6 +854,12 @@ def main():
             html += table_html
             html += "<br><br>"
         html += generate_html_end()
+
+        if args.preview_file:
+            with open(args.preview_file, "w") as f:
+                f.write(html)
+            print(f"Vorschau geschrieben: {args.preview_file} (nicht veröffentlicht, keine Mail gesendet)")
+            return
 
         today_str = publish_html_to_webserver(html, args.local_publish_dir, args.remote_ssh_host,
                                                args.remote_publish_dir)

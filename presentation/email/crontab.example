@@ -23,3 +23,9 @@
   --grafana-url "$REPORT_GRAFANA_URL" --meter-description "$REPORT_METER_DESCRIPTION" \
   --reading-head-description "$REPORT_READING_HEAD_DESCRIPTION" \
   > /dev/null 2>&1
+
+# Optional: add the average temperature of an rtl_433 sensor (persistence/mysql/temperature) to
+# every section by appending these two flags before the redirect above. Without the roll-up
+# tables the report is built without temperature (a warning is printed).
+#   --temperature-model inFactory-TH --temperature-id 168 \
+
