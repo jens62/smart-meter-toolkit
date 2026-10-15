@@ -208,7 +208,9 @@ Organized by the same three steps as above - acquisition, persistence,
 presentation:
 - [`acquisition/tasmota-ir/`](acquisition/tasmota-ir/README.md) - Tasmota IR head → MQTT → telegraf
 - [`persistence/mysql/`](persistence/mysql/README.md) - schema, rollup procedure/event
-- [`presentation/email/`](presentation/email/README.md) - daily/monthly HTML mail report
+  - [`persistence/mysql/temperature/`](persistence/mysql/temperature/README.md) - optional: time-weighted
+    average temperature (hour … year) of an rtl_433 sensor
+- [`presentation/email/`](presentation/email/README.md) - daily/monthly HTML mail report (optionally with temperature columns)
 - [`presentation/website/`](presentation/website/README.md) - archive page for past reports
 - [`presentation/rss/`](presentation/rss/README.md) - live RSS/JSON feed of the latest reading
 
