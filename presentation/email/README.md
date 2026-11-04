@@ -39,7 +39,7 @@ temperature, so the script works without it:
 
 ```
 --temperature-model inFactory-TH     rtl_433 model of the sensor
---temperature-id 168                 rtl_433 id of the sensor (REPORT_TEMPERATURE_ID) (both flags together, or none)
+--temperature-id 168,47              rtl_433 id(s) of the sensor, comma-separated (REPORT_TEMPERATURE_IDS) (both flags together, or none)
 --preview-file /tmp/report.html      write the HTML to this file and stop: nothing is published or emailed
 ```
 
@@ -47,11 +47,11 @@ The tables are found by name: `rtl_433_<model>_<id>_TEMPERATURE_<period>` (e.g.
 `rtl_433_inFactory_TH_168_TEMPERATURE_daily`). The report user needs `SELECT` on them.
 
 The sensor is configured in the env file, not in the command: set `REPORT_TEMPERATURE_MODEL` and
-`REPORT_TEMPERATURE_ID` in `three-phase-meter-mail.env` (see the `.env.example`). The crontab line
-(`crontab.example`) passes the two flags only when `REPORT_TEMPERATURE_ID` is set, so without the
+`REPORT_TEMPERATURE_IDS` in `three-phase-meter-mail.env` (see the `.env.example`). The crontab line
+(`crontab.example`) passes the two flags only when `REPORT_TEMPERATURE_IDS` is set, so without the
 variables the report has no temperature. If the sensor gets a new id (rtl_433 sensors usually do
 after a battery change), register it with `persistence/mysql/temperature/backfill_temperature.sh`
-and change `REPORT_TEMPERATURE_ID`; the same id is what the Grafana queries filter on.
+and append the new id to `REPORT_TEMPERATURE_IDS` (e.g. `168,47`). The temperature of a period is then combined over all listed ids (time-weighted), so days before the change keep their value. The Grafana queries need the same union.
 
 ### How the temperature is matched to a row
 

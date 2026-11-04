@@ -359,6 +359,35 @@ def temperature_table(model, sensor_id, level):
     return f"rtl_433_{safe_model}_{int(sensor_id)}_TEMPERATURE_{level}"
 
 
+def parse_temperature_ids(value):
+    """'47,168' -> [47, 168]; a single id ('168') stays a list of one."""
+    try:
+        ids = [int(part) for part in value.replace(" ", "").split(",") if part]
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a comma-separated list of integer ids: {value!r}")
+    if not ids:
+        raise argparse.ArgumentTypeError("at least one id is required")
+    return ids
+
+
+def temperature_source(model, sensor_ids, level):
+    """Derived table with one temperature row per period, combined over all ids of the sensor.
+
+    rtl_433 sensors get a new random id after a battery change, so the history of "the" sensor is
+    spread over the roll-up tables of several ids. The roll-ups are additive (integral and covered
+    seconds), so the periods are summed over the ids; a period that is split between two ids (the
+    day of the change) is therefore the time-weighted average of both. Columns as in one roll-up
+    table: period_start_utc, period_start_local, avg_temp_c, coverage_pct, integral_cs, covered_seconds."""
+    parts = " UNION ALL ".join(
+        "SELECT period_start_utc, period_start_local, integral_cs, covered_seconds, expected_seconds "
+        f"FROM `{temperature_table(model, sensor_id, level)}`" for sensor_id in sensor_ids)
+    return ("(SELECT period_start_utc, period_start_local, SUM(integral_cs) AS integral_cs, "
+            "SUM(covered_seconds) AS covered_seconds, "
+            "SUM(integral_cs) / NULLIF(SUM(covered_seconds), 0) AS avg_temp_c, "
+            "LEAST(100, 100 * SUM(covered_seconds) / MAX(expected_seconds)) AS coverage_pct "
+            f"FROM ({parts}) u GROUP BY period_start_utc, period_start_local)")
+
+
 def temperature_available(db_config, model, sensor_id):
     """True if all six roll-up tables of the sensor can be read and the hourly table has data.
 
@@ -619,13 +648,13 @@ TEMP_JOIN_ON = {
 
 def _section_sql(device_id, temperature, level, label_alias, label_expr, detail_where, summary_where,
                  summary_label, summary_total):
-    """Abfrage eines Abschnitts. temperature: None oder (model, sensor_id)."""
+    """Abfrage eines Abschnitts. temperature: None oder (model, [sensor_id, ...])."""
     table = f"`tasmota_{device_id}_SENSOR_CONSUMPTION_{level}`"
 
     join = temp_detail = temp_summary = help_detail = help_summary = temp_final = help_final = ""
     if temperature:
-        model, sensor_id = temperature
-        join = f"LEFT JOIN `{temperature_table(model, sensor_id, level)}` t ON {TEMP_JOIN_ON[level]}"
+        model, sensor_ids = temperature
+        join = f"LEFT JOIN {temperature_source(model, sensor_ids, level)} t ON {TEMP_JOIN_ON[level]}"
         # Detailzeilen: Wert der Periode. Summenzeile: zeitgewichteter Mittelwert über alle Zeilen.
         temp_detail = f"IFNULL(FORMAT(t.avg_temp_c, {TEMP_DECIMALS}, 'de_DE'), '--') AS `{TEMP_COL}`,"
         temp_summary = (f"IFNULL(FORMAT(SUM(t.integral_cs) / NULLIF(SUM(t.covered_seconds), 0), "
@@ -679,7 +708,7 @@ def _section_sql(device_id, temperature, level, label_alias, label_expr, detail_
 
 
 def build_query_list(device_id, temperature=None):
-    """temperature: None (no temperature columns) or (model, sensor_id), e.g. ('inFactory-TH', 168)."""
+    """temperature: None (no temperature columns) or (model, [sensor_id, ...]), e.g. ('inFactory-TH', [47, 168])."""
     total_and_avg = ("CONCAT(FORMAT(SUM(power_consumption_total), 3, 'de_DE'), ' / ', "
                      "FORMAT(AVG(power_consumption_total), 3, 'de_DE'))")
     total_only = "FORMAT(SUM(power_consumption_total), 3, 'de_DE')"
@@ -773,8 +802,10 @@ def parse_args():
                          help="rtl_433 model of the temperature sensor, e.g. inFactory-TH. Together with "
                               "--temperature-id this adds the temperature columns (roll-up tables from "
                               "persistence/mysql/temperature)")
-    parser.add_argument("--temperature-id", type=int, default=None,
-                         help="rtl_433 id of the temperature sensor, e.g. 168")
+    parser.add_argument("--temperature-id", type=parse_temperature_ids, default=None,
+                         help="rtl_433 id of the temperature sensor, e.g. 168. A comma-separated list "
+                              "(47,168) joins the history of a sensor that got a new id after a battery "
+                              "change; the periods are combined over all ids")
     parser.add_argument("--preview-file", default=None,
                          help="Write the HTML report to this file and stop: nothing is published "
                               "or emailed")
@@ -799,8 +830,10 @@ def main():
 
     meter_number, html_for_meter_number = get_html_for_meter_number(db_config, args.device_id)
     temperature = (args.temperature_model, args.temperature_id) if args.temperature_model else None
-    if temperature and not temperature_available(db_config, *temperature):
-        temperature = None   # warning already printed: carry on with the plain report
+    if temperature:
+        usable = [i for i in temperature[1] if temperature_available(db_config, temperature[0], i)]
+        # ids without (readable) tables were reported above and are left out
+        temperature = (temperature[0], usable) if usable else None
     query_list = build_query_list(args.device_id, temperature)
     # "Verbrauch Gesamt" is column 4, or column 5 when the temperature column is in front of it
     consumption_col = 5 if temperature else 4
@@ -828,7 +861,7 @@ def main():
         if temperature:
             temperature_li = (
                 f'<li>„Ø °C“ ist die zeitgewichtete Durchschnittstemperatur des Sensors '
-                f'{args.temperature_model} ({args.temperature_id}); die Farbe der Punkte reicht von blau (kalt) '
+                f'{args.temperature_model} ({", ".join(str(i) for i in args.temperature_id)}); die Farbe der Punkte reicht von blau (kalt) '
                 f'bis rot (warm). Graue Werte und hohle Punkte: weniger als {TEMP_PARTIAL_BELOW_PCT} % '
                 f'des Zeitraums waren durch Messwerte abgedeckt.</li>'
             )
