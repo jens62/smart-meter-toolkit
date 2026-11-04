@@ -25,8 +25,15 @@ CREATE TABLE IF NOT EXISTS rtl_433_TEMPERATURE_config (
     max_gap_seconds INT UNSIGNED NOT NULL DEFAULT 3600,
     -- Every run recomputes this many hours back, so readings that arrive late are picked up.
     lookback_hours INT UNSIGNED NOT NULL DEFAULT 48,
+    -- 1 = the hourly event (proc_calculate_temperature_configured) rolls this sensor up. Set it to 0
+    -- to pause a sensor; its tables and rows stay as they are.
+    active TINYINT(1) NOT NULL DEFAULT 1,
     PRIMARY KEY (model, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+-- Tables created before the column existed.
+ALTER TABLE rtl_433_TEMPERATURE_config ADD COLUMN IF NOT EXISTS active TINYINT(1) NOT NULL DEFAULT 1;
+
+-- Example sensor. Add your own with backfill_temperature.sh (config row + back-fill in one step).
 INSERT IGNORE INTO rtl_433_TEMPERATURE_config (model, id, data_from_utc, max_gap_seconds, lookback_hours)
 VALUES ('inFactory-TH', 168, '2026-09-01 00:00:00', 3600, 48);

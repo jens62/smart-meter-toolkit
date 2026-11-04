@@ -27,7 +27,19 @@ The first run (the event, or `CALL proc_calculate_temperature_all_rates('inFacto
 creates the six tables and back-fills everything from `data_from_utc` on. The database account
 that creates the procedures needs `CREATE TEMPORARY TABLES` (the roll-up uses temporary tables).
 
-For another sensor add a row to `rtl_433_TEMPERATURE_config` and a `CALL` line to the event.
+The event rolls up every sensor with `active = 1` in `rtl_433_TEMPERATURE_config`
+(`proc_calculate_temperature_configured`). To add a sensor, or to switch to the new id after a
+battery change, register it and back-fill its history in one step:
+
+```bash
+./backfill_temperature.sh <db_name> inFactory-TH 47            # history from its first reading
+./backfill_temperature.sh <db_name> inFactory-TH 47 '2026-10-31 14:00:00'   # or from a given UTC time
+```
+
+(`MYSQL_ARGS='-u <user> -p'` passes connection options.) Nothing in the event has to be edited.
+The old sensor stays active and keeps its tables; set `active = 0` in the config row to pause it.
+Rows of the old id are not merged into the new one: pick the id in the report
+(`REPORT_TEMPERATURE_ID`) and in the Grafana queries.
 
 ## Tables
 

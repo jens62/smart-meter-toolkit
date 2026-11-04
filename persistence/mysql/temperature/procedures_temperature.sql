@@ -23,7 +23,9 @@
 -- readings inside the look-back window are picked up.
 --
 -- Entry points
---   proc_calculate_temperature_all_rates(model, id)         what the event calls (UTC_TIMESTAMP())
+--   proc_calculate_temperature_configured()                 what the event calls: every sensor with
+--                                                           active = 1 in rtl_433_TEMPERATURE_config
+--   proc_calculate_temperature_all_rates(model, id)         one sensor (UTC_TIMESTAMP())
 --   proc_calculate_temperature_all_rates_at(now_utc, model, id)  same for a given moment
 --   proc_calculate_temperature_range(model, id, from_utc, to_utc)  repair / back-fill a range
 --   proc_create_temperature_tables(model, id)               creates the six tables (idempotent)
@@ -357,6 +359,30 @@ CREATE PROCEDURE proc_calculate_temperature_range(
     IN p_model VARCHAR(32), IN p_id INT UNSIGNED, IN p_from_utc DATETIME, IN p_to_utc DATETIME)
 BEGIN
     CALL proc_calculate_temperature_all_rates_core(UTC_TIMESTAMP(), p_model, p_id, p_from_utc, p_to_utc);
+END$$
+
+-- What the hourly event calls: roll up every sensor that is active in rtl_433_TEMPERATURE_config.
+-- A sensor that fails (e.g. a table it may not create) does not stop the others; the error is
+-- skipped and shows up as missing rows for that sensor.
+DROP PROCEDURE IF EXISTS proc_calculate_temperature_configured$$
+CREATE PROCEDURE proc_calculate_temperature_configured()
+BEGIN
+    DECLARE v_done INT DEFAULT 0;
+    DECLARE v_model VARCHAR(32);
+    DECLARE v_id INT UNSIGNED;
+    DECLARE c CURSOR FOR SELECT model, id FROM rtl_433_TEMPERATURE_config WHERE active = 1 ORDER BY model, id;
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET v_done = 1;
+
+    OPEN c;
+    sensors: LOOP
+        FETCH c INTO v_model, v_id;
+        IF v_done THEN LEAVE sensors; END IF;
+        BEGIN
+            DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+            CALL proc_calculate_temperature_all_rates(v_model, v_id);
+        END;
+    END LOOP;
+    CLOSE c;
 END$$
 
 DELIMITER ;
