@@ -109,6 +109,21 @@ Run against a copy of the real report tables (MariaDB 10.11 container, `TZ=Europ
   errors; with a sensor that has no tables the report is byte-for-byte the report without flags.
   The real mail (including the BeautifulSoup re-parsing for the browser link) was sent and checked.
 
+## Optional: annual reading table
+
+With `--annual-reading-date MM-DD` (env: `REPORT_ANNUAL_READING_DATE`, e.g. `10-31`) the report ends
+with a table "Zählerstand zum Stichtag 31.10." for the energy provider's annual reading: one row per
+year with the meter reading (total, HT, NT) and the consumption since the previous year's reading.
+
+* The reading is the **last reading of that local day**: the `time` of a row of
+  `tasmota_<device>_SENSOR_CONSUMPTION_daily` is the local time of the last reading of its day.
+* Only dates that have ended are listed (the 2026 row appears the day after the date). Years before
+  the first reading are left out, and the oldest row has no consumption.
+* **Fallback:** if there is no reading on the date (outage), the last earlier reading is used and
+  marked with `*`; a note under the table gives its real date and time. The same applies to `02-29`
+  in years without that day.
+* Numbers have three decimals like the rest of the report. Unset the variable and the table is omitted.
+
 ## Deployment status
 
 Live on `raspi4-8GB-Jag` since 2026-08-31, replacing the hardcoded

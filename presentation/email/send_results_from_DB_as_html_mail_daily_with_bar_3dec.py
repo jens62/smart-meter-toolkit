@@ -31,7 +31,7 @@ from email.utils import formataddr
 from bs4 import BeautifulSoup
 
 import plumbum
-from datetime import date
+from datetime import date, datetime, timedelta
 
 
 def german_to_float(number_str: str) -> float:
@@ -558,6 +558,98 @@ def generate_html_table(data, column_names, max_consumption):
 
 
 
+def parse_annual_reading_date(value):
+    """'10-31' -> (10, 31). 02-29 is allowed (leap years only, see annual_reading_rows)."""
+    try:
+        parsed = datetime.strptime("2000-" + value, "%Y-%m-%d")   # 2000 is a leap year
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected MM-DD (e.g. 10-31), got {value!r}")
+    return parsed.month, parsed.day
+
+
+def annual_reading_rows(daily_rows, month, day, today):
+    """Reading of the meter as of the same date every year (e.g. for the energy provider).
+
+    daily_rows: (time, total, ht, nt) of the daily consumption table, ascending. "time" is the local
+    time of the LAST reading of that local day, so the row of the date is the last reading on that
+    date. Returns one dict per year, newest first: the readings, whether a fallback was used (no
+    reading on the date, e.g. after an outage, or 29 Feb in a non-leap year: the last earlier reading
+    is taken and its real time is shown), and the consumption since the previous year's reading.
+    Only dates that have ended are listed; years before the first reading are left out."""
+    result = []
+    if not daily_rows:
+        return result
+    for year in range(daily_rows[0][0].year, today.year + 1):
+        try:
+            nominal = date(year, month, day)
+        except ValueError:                       # 29 Feb in a non-leap year
+            nominal = None
+        cutoff = nominal if nominal else date(year, 3, 1) - timedelta(days=1)
+        if cutoff >= today:                      # the date has not ended yet
+            continue
+        candidates = [r for r in daily_rows if r[0].date() <= cutoff]
+        if not candidates:                       # no reading yet on or before that date
+            continue
+        time_, total, ht, nt = candidates[-1]
+        result.append({"year": year, "nominal": nominal, "time": time_, "total": total, "ht": ht, "nt": nt,
+                       "fallback": nominal is None or time_.date() != nominal})
+    result.sort(key=lambda r: r["year"])
+    for prev, cur in zip([None] + result, result):
+        for key in ("total", "ht", "nt"):
+            cur["d_" + key] = None if prev is None or cur[key] is None or prev[key] is None else cur[key] - prev[key]
+    result.reverse()
+    return result
+
+
+def fmt_de(value, decimals=3):
+    """12345.6789 -> '12.345,679'; None -> '--'."""
+    if value is None:
+        return "--"
+    return f"{value:,.{decimals}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def annual_reading_html(db_config, device_id, month, day, today=None):
+    """HTML section 'Zählerstand zum Stichtag', or '' (with a warning) if it cannot be built."""
+    today = today or date.today()
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT time, SML_1_8_0__Bezug_Gesamt, SML_1_8_1__Bezug_HT, SML_1_8_2__Bezug_NT "
+                       f"FROM `tasmota_{device_id}_SENSOR_CONSUMPTION_daily` ORDER BY time")
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+    except mysql.connector.Error as err:
+        print(f"Warnung: Stichtags-Zählerstand nicht lesbar ({err}) - Bericht ohne Stichtagstabelle")
+        return ""
+    entries = annual_reading_rows(rows, month, day, today)
+    if not entries:
+        return ""
+
+    html = f"<h3>Zählerstand zum Stichtag {day:02d}.{month:02d}.</h3><br>"
+    html += "<table>"
+    html += ('<tr><th rowspan="2">Stichtag</th><th colspan="3">Stand</th>'
+             '<th colspan="3">Verbrauch in Periode</th></tr>')
+    html += ("<tr><th>Gesamt (1.8.0)</th><th>HT (1.8.1)</th><th>NT (1.8.2)</th>"
+             "<th>Gesamt (1.8.0)</th><th>HT (1.8.1)</th><th>NT (1.8.2)</th></tr>")
+    notes = []
+    for e in entries:
+        label = e["nominal"].strftime("%d.%m.%Y") if e["nominal"] else f"{day:02d}.{month:02d}.{e['year']}"
+        if e["fallback"]:
+            label += f" *"
+            notes.append(f"* {label[:-2]}: keine Ablesung an diesem Tag, letzte Ablesung davor am "
+                         f"{e['time'].strftime('%d.%m.%Y %H:%M')}.")
+        html += (f"<tr><td>{label}</td><td>{fmt_de(e['total'])}</td><td>{fmt_de(e['ht'])}</td>"
+                 f"<td>{fmt_de(e['nt'])}</td>"
+                 f"<td>{fmt_de(e['d_total']) if e['d_total'] is not None else ''}</td>"
+                 f"<td>{fmt_de(e['d_ht']) if e['d_ht'] is not None else ''}</td>"
+                 f"<td>{fmt_de(e['d_nt']) if e['d_nt'] is not None else ''}</td></tr>")
+    html += "</table>"
+    if notes:
+        html += "<p>" + "<br>".join(notes) + "</p>"
+    return html
+
+
 def publish_html_to_webserver(html, local_publish_dir, remote_ssh_host, remote_publish_dir):
     # Generate filename with today's date
     today_str = date.today().strftime("%Y-%m-%d")
@@ -806,6 +898,11 @@ def parse_args():
                          help="rtl_433 id of the temperature sensor, e.g. 168. A comma-separated list "
                               "(47,168) joins the history of a sensor that got a new id after a battery "
                               "change; the periods are combined over all ids")
+    parser.add_argument("--annual-reading-date", type=parse_annual_reading_date, default=None,
+                         metavar="MM-DD",
+                         help="Adds a table with the meter reading (last reading of that local day) as of this "
+                              "date in every year, e.g. 10-31 for the annual reading the energy provider "
+                              "asks for, with the consumption since the previous year")
     parser.add_argument("--preview-file", default=None,
                          help="Write the HTML report to this file and stop: nothing is published "
                               "or emailed")
@@ -886,6 +983,10 @@ def main():
         for table_html in html_table_list:
             html += table_html
             html += "<br><br>"
+        if args.annual_reading_date:
+            annual_html = annual_reading_html(db_config, args.device_id, *args.annual_reading_date)
+            if annual_html:
+                html += annual_html + "<br><br>"
         html += generate_html_end()
 
         if args.preview_file:

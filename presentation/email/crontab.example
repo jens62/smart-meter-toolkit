@@ -23,6 +23,7 @@
   --grafana-url "$REPORT_GRAFANA_URL" --meter-description "$REPORT_METER_DESCRIPTION" \
   --reading-head-description "$REPORT_READING_HEAD_DESCRIPTION" \
   ${REPORT_TEMPERATURE_IDS:+--temperature-model "$REPORT_TEMPERATURE_MODEL" --temperature-id "$REPORT_TEMPERATURE_IDS"} \
+  ${REPORT_ANNUAL_READING_DATE:+--annual-reading-date "$REPORT_ANNUAL_READING_DATE"} \
   > /dev/null 2>&1
 
 # Optional temperature: the line above adds the average temperature of an rtl_433 sensor
