@@ -39,19 +39,19 @@ temperature, so the script works without it:
 
 ```
 --temperature-model inFactory-TH     rtl_433 model of the sensor
---temperature-id 168                 rtl_433 id of the sensor (both flags together, or none)
+--temperature-id 168                 rtl_433 id of the sensor (REPORT_TEMPERATURE_ID) (both flags together, or none)
 --preview-file /tmp/report.html      write the HTML to this file and stop: nothing is published or emailed
 ```
 
 The tables are found by name: `rtl_433_<model>_<id>_TEMPERATURE_<period>` (e.g.
 `rtl_433_inFactory_TH_168_TEMPERATURE_daily`). The report user needs `SELECT` on them.
 
-In the crontab, add the two flags at the end of the command (see `crontab.example`):
-
-```
-... --reading-head-description "$REPORT_READING_HEAD_DESCRIPTION" \
-    --temperature-model inFactory-TH --temperature-id 168
-```
+The sensor is configured in the env file, not in the command: set `REPORT_TEMPERATURE_MODEL` and
+`REPORT_TEMPERATURE_ID` in `three-phase-meter-mail.env` (see the `.env.example`). The crontab line
+(`crontab.example`) passes the two flags only when `REPORT_TEMPERATURE_ID` is set, so without the
+variables the report has no temperature. If the sensor gets a new id (rtl_433 sensors usually do
+after a battery change), register it with `persistence/mysql/temperature/backfill_temperature.sh`
+and change `REPORT_TEMPERATURE_ID`; the same id is what the Grafana queries filter on.
 
 ### How the temperature is matched to a row
 
