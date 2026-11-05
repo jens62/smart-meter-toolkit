@@ -49,18 +49,19 @@ CREATE TABLE IF NOT EXISTS tasmota_METER1_SENSOR (
 -- by proc_calculate_consumption_all_rates as the delta between this row and
 -- the previous one.
 CREATE TABLE IF NOT EXISTS tasmota_METER1_SENSOR_CONSUMPTION_hourly (
-    -- Local Berlin time of the last reading of the period (what reports use).
+    -- Local Berlin time of the last reading of the period (what reports use). Not unique: in the
+    -- repeated hour in autumn the last readings of two UTC hours can have the same local time.
     "time" DATETIME NOT NULL,
-    -- UTC time of that same reading (unambiguous; use this for UTC dashboards).
-    "time_utc" DATETIME NULL,
+    -- UTC time of that same reading: unambiguous, the primary key of the hourly table.
+    "time_utc" DATETIME NOT NULL,
     "SML_1_8_0__Bezug_Gesamt" DOUBLE DEFAULT NULL,
     "SML_1_8_1__Bezug_HT" DOUBLE DEFAULT NULL,
     "SML_1_8_2__Bezug_NT" DOUBLE DEFAULT NULL,
     "power_consumption_total" DOUBLE DEFAULT NULL,
     "power_consumption_HT" DOUBLE DEFAULT NULL,
     "power_consumption_NT" DOUBLE DEFAULT NULL,
-    PRIMARY KEY ("time"),
-    KEY "idx_time_utc" ("time_utc")
+    PRIMARY KEY ("time_utc"),
+    KEY "idx_time" ("time")
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE IF NOT EXISTS tasmota_METER1_SENSOR_CONSUMPTION_daily (

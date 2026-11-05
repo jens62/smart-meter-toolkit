@@ -73,6 +73,10 @@ CALL proc_calculate_consumption_all_rates_debug();
 - `berlin_time` (generated column) is the local Berlin wall clock of the same reading. It is
   not unique: in the repeated hour in autumn the same local time occurs twice. `time` is a plain
   index, not `UNIQUE`, for the same reason.
+- The hourly rollup table is keyed by `time_utc` (primary key), the other five by the local `time`:
+  in the repeated hour the last readings of the two UTC hours can have the same local time, and the
+  hourly table has 25 rows on that day. An existing installation migrates with
+  `migrate_hourly_pk_utc.sql` (it also repairs the repeated hour of an earlier autumn).
 - The six rollup tables keep `time` = **local Berlin time** of the last reading of the period (primary
   key, what reports like `presentation/email` use) and have `time_utc` = the **UTC time of the
   same reading**. `time_utc` is unambiguous (also in the repeated autumn hour) and is what a

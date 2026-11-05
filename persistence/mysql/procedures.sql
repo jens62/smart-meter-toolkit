@@ -42,6 +42,14 @@
 -- same reading (raw column "time"). It is unambiguous even in the repeated hour in autumn
 -- and is what a UTC dashboard should plot/filter on (see README.md, "Time zones").
 --
+-- Repeated hour in autumn: the hourly buckets are UTC hours (the raw "time" column), not local
+-- hours. Grouped by local hour the two readings-hours 02:00-03:00 CEST and 02:00-03:00 CET were one
+-- bucket and the hourly table had 24 rows on a 25 hour day, with the consumption of two hours in
+-- one row. The consecutive-bucket delta (LAG) is ordered by UTC for the same reason: the local time
+-- is not monotonic in that hour. The hourly table therefore has time_utc as its primary key
+-- (schema.sql); the last readings of the two hours can have the same local "time".
+-- Day and longer periods are unaffected (a local day/week/... is not ambiguous).
+--
 -- Upgrading an installation that already has stub rows: see README.md
 -- ("Stub rows and lost periods").
 
@@ -149,7 +157,7 @@ BEGIN
     
     INSERT INTO Periods (periodName, intervalValue, partitionExpression, tableName, boundary)
     VALUES 
-        ('hourly', '1 HOUR', 'DATE_FORMAT(berlin_time, ''%Y-%m-%d %H'')', 'tasmota_METER1_SENSOR_CONSUMPTION_hourly', DATE_FORMAT(currentTime, '%Y-%m-%d %H:00:00'));
+        ('hourly', '1 HOUR', 'DATE_FORMAT(time, ''%Y-%m-%d %H'')', 'tasmota_METER1_SENSOR_CONSUMPTION_hourly', DATE_FORMAT(currentTime, '%Y-%m-%d %H:00:00'));
 
     IF HOUR(currentTime) = 0 THEN
         INSERT INTO Periods (periodName, intervalValue, partitionExpression, tableName, boundary)
@@ -204,9 +212,9 @@ BEGIN
             '        SML_1_8_0__Bezug_Gesamt, \n',
             '        SML_1_8_1__Bezug_HT, \n',
             '        SML_1_8_2__Bezug_NT, \n',
-            '        (SML_1_8_0__Bezug_Gesamt - LAG(SML_1_8_0__Bezug_Gesamt) OVER (ORDER BY local_time)) AS delta_power_total, \n',
-            '        (SML_1_8_1__Bezug_HT - LAG(SML_1_8_1__Bezug_HT) OVER (ORDER BY local_time)) AS delta_power_HT, \n',
-            '        (SML_1_8_2__Bezug_NT - LAG(SML_1_8_2__Bezug_NT) OVER (ORDER BY local_time)) AS delta_power_NT \n',
+            '        (SML_1_8_0__Bezug_Gesamt - LAG(SML_1_8_0__Bezug_Gesamt) OVER (ORDER BY reading_utc)) AS delta_power_total, \n',
+            '        (SML_1_8_1__Bezug_HT - LAG(SML_1_8_1__Bezug_HT) OVER (ORDER BY reading_utc)) AS delta_power_HT, \n',
+            '        (SML_1_8_2__Bezug_NT - LAG(SML_1_8_2__Bezug_NT) OVER (ORDER BY reading_utc)) AS delta_power_NT \n',
             '    FROM ( \n',
             '        WITH period_bucket AS ( \n',
             '            WITH ranked_data AS ( \n',
