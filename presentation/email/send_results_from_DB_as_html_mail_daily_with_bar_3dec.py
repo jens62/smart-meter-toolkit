@@ -558,6 +558,14 @@ def generate_html_table(data, column_names, max_consumption):
 
 
 
+def parse_report_date(value):
+    """'2026-11-04' -> date(2026, 11, 4)"""
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected YYYY-MM-DD, got {value!r}")
+
+
 def parse_annual_reading_date(value):
     """'10-31' -> (10, 31). 02-29 is allowed (leap years only, see annual_reading_rows)."""
     try:
@@ -650,9 +658,9 @@ def annual_reading_html(db_config, device_id, month, day, today=None):
     return html
 
 
-def publish_html_to_webserver(html, local_publish_dir, remote_ssh_host, remote_publish_dir):
-    # Generate filename with today's date
-    today_str = date.today().strftime("%Y-%m-%d")
+def publish_html_to_webserver(html, local_publish_dir, remote_ssh_host, remote_publish_dir, report_date=None):
+    # Generate filename with today's date (or the report date when an archived report is regenerated)
+    today_str = (report_date or date.today()).strftime("%Y-%m-%d")
     local_file_path = os.path.join(local_publish_dir, f"daily-email_{today_str}.html")
 
     with open(local_file_path, "w") as f:
@@ -739,9 +747,16 @@ TEMP_JOIN_ON = {
 
 
 def _section_sql(device_id, temperature, level, label_alias, label_expr, detail_where, summary_where,
-                 summary_label, summary_total):
+                 summary_label, summary_total, report_date=None):
     """Abfrage eines Abschnitts. temperature: None oder (model, [sensor_id, ...])."""
     table = f"`tasmota_{device_id}_SENSOR_CONSUMPTION_{level}`"
+
+    if report_date is not None:
+        # Report as of a past date (regenerating an archived report): the date replaces CURDATE(), and
+        # nothing from that date on is included (it did not exist when the report was made).
+        ref = f"DATE('{report_date.isoformat()}')"
+        detail_where = detail_where.replace("CURDATE()", ref) + f" AND time < {ref}"
+        summary_where = summary_where.replace("CURDATE()", ref) + f" AND time < {ref}"
 
     join = temp_detail = temp_summary = help_detail = help_summary = temp_final = help_final = ""
     if temperature:
@@ -799,7 +814,7 @@ def _section_sql(device_id, temperature, level, label_alias, label_expr, detail_
           """
 
 
-def build_query_list(device_id, temperature=None):
+def build_query_list(device_id, temperature=None, report_date=None):
     """temperature: None (no temperature columns) or (model, [sensor_id, ...]), e.g. ('inFactory-TH', [47, 168])."""
     total_and_avg = ("CONCAT(FORMAT(SUM(power_consumption_total), 3, 'de_DE'), ' / ', "
                      "FORMAT(AVG(power_consumption_total), 3, 'de_DE'))")
@@ -846,7 +861,7 @@ def build_query_list(device_id, temperature=None):
             summary_where="time < MAKEDATE(YEAR(CURDATE()), 1)",
             summary_label=avg_label, summary_total=total_and_avg)),
     ]
-    return [[title, _section_sql(device_id, temperature, **kwargs)] for title, kwargs in sections]
+    return [[title, _section_sql(device_id, temperature, report_date=report_date, **kwargs)] for title, kwargs in sections]
 
 
 def parse_args():
@@ -903,6 +918,13 @@ def parse_args():
                          help="Adds a table with the meter reading (last reading of that local day) as of this "
                               "date in every year, e.g. 10-31 for the annual reading the energy provider "
                               "asks for, with the consumption since the previous year")
+    parser.add_argument("--report-date", type=parse_report_date, default=None, metavar="YYYY-MM-DD",
+                         help="Build the report as it was made on this date (the morning it covers the day "
+                              "before): sections and the annual table end before that date and the file is "
+                              "published as daily-email_<date>.html. Default: today. Use it with "
+                              "--publish-only to regenerate an archived report")
+    parser.add_argument("--publish-only", action="store_true",
+                         help="Publish the report (local directory and webserver) but do not send the email")
     parser.add_argument("--preview-file", default=None,
                          help="Write the HTML report to this file and stop: nothing is published "
                               "or emailed")
@@ -931,7 +953,7 @@ def main():
         usable = [i for i in temperature[1] if temperature_available(db_config, temperature[0], i)]
         # ids without (readable) tables were reported above and are left out
         temperature = (temperature[0], usable) if usable else None
-    query_list = build_query_list(args.device_id, temperature)
+    query_list = build_query_list(args.device_id, temperature, args.report_date)
     # "Verbrauch Gesamt" is column 4, or column 5 when the temperature column is in front of it
     consumption_col = 5 if temperature else 4
 
@@ -984,7 +1006,7 @@ def main():
             html += table_html
             html += "<br><br>"
         if args.annual_reading_date:
-            annual_html = annual_reading_html(db_config, args.device_id, *args.annual_reading_date)
+            annual_html = annual_reading_html(db_config, args.device_id, *args.annual_reading_date, today=args.report_date)
             if annual_html:
                 html += annual_html + "<br><br>"
         html += generate_html_end()
@@ -996,7 +1018,10 @@ def main():
             return
 
         today_str = publish_html_to_webserver(html, args.local_publish_dir, args.remote_ssh_host,
-                                               args.remote_publish_dir)
+                                               args.remote_publish_dir, args.report_date)
+        if args.publish_only:
+            print(f"Veröffentlicht: daily-email_{today_str}.html (keine Mail gesendet)")
+            return
         html = add_link_to_view_in_browser(html, today_str, args.public_base_url)
         send_email(html, meter_number, args.sender_name, args.sender_email, args.reply_to_name,
                    args.reply_to_email, args.recipient, args.cc_recipient)
