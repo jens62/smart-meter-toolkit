@@ -759,7 +759,7 @@ def _section_sql(device_id, temperature, level, label_alias, label_expr, detail_
     return f"""
                 WITH combined as (
                     (SELECT 1 AS sort_order,
-                            ROW_NUMBER() OVER (ORDER BY time DESC) AS rn,
+                            ROW_NUMBER() OVER (ORDER BY COALESCE(time_utc, CONVERT_TZ(time, 'Europe/Berlin', 'UTC')) DESC) AS rn,
                             {label_expr} AS `{label_alias}`,
                             FORMAT(SML_1_8_0__Bezug_Gesamt, 3, 'de_DE') AS `Stand Gesamt`,
                             FORMAT(SML_1_8_1__Bezug_HT, 3, 'de_DE') AS `Stand HT`,
